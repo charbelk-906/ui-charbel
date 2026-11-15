@@ -1,5 +1,8 @@
 package com.example.myapplication
 
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
@@ -96,10 +99,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ServerConfig.load(this)
+        BackendSession.load(this)
+        AccessibilityPrefs.load(this)
         setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Blue)) { AirportApp() } }
     }
 }
-private enum class Page { Welcome, Login, Register, Home, Places, Navigation, Technician, LiveSignals, BeaconTest, Profile }
+private enum class Page { Welcome, Login, Register, Home, Places, Navigation, Technician, LiveSignals, BeaconTest, Profile, Restoring }
 private enum class AccountType { User, Administrator }
 private enum class PlaceType(val label: String, val icon: ImageVector, val color: Color) {
     Gate("Gates", Icons.Default.Flight, Blue),
@@ -111,7 +116,7 @@ private enum class PlaceType(val label: String, val icon: ImageVector, val color
 private data class AirportPlace(val name: String, val detail: String, val type: PlaceType)
 @Composable
 private fun AirportApp() {
-    var page by remember { mutableStateOf(Page.Welcome) }
+    var page by remember { mutableStateOf(if (BackendSession.token != null) Page.Restoring else Page.Welcome) }
     var registeredEmail by remember { mutableStateOf("") }
     var registrationNotice by remember { mutableStateOf("") }
     var type by remember { mutableStateOf(AccountType.User) }
@@ -120,12 +125,13 @@ private fun AirportApp() {
     var destinationCategory by remember { mutableStateOf<PlaceType?>(null) }
     var selectedBeaconId by remember { mutableStateOf<Long?>(null) }
     var placesQuery by remember { mutableStateOf("") }
+    var searchCategory by remember { mutableStateOf(PlaceCategory.All) }
     val appScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun signOut() {
         val oldToken = BackendSession.token
-        BackendSession.token = null
-        BackendSession.email = null
+        BackendSession.clear(context)
         registeredEmail = ""; registrationNotice = ""; type = AccountType.User
         selectedDestination = null; destinationCategory = null; selectedBeaconId = null; placesQuery = ""; destination = "Gate C7"
         page = Page.Welcome
@@ -135,11 +141,38 @@ private fun AirportApp() {
             catch (_: Exception) { /* Local sign-out completes even if server is offline. */ }
         }
     }
-
+    // On app start: if a session was saved, check it with the server and open the right app.
+    LaunchedEffect(Unit) {
+        if (page != Page.Restoring) return@LaunchedEffect
+        val token = BackendSession.token ?: run { page = Page.Welcome; return@LaunchedEffect }
+        registeredEmail = BackendSession.email.orEmpty()
+        page = try {
+            val me = technicianRequest("/auth/me", token)
+            me.optString("email").takeIf { it.isNotBlank() }?.let { BackendSession.email = it }
+            if (BackendSession.technician &&
+                technicianRequest("/technician/access", token).optBoolean("authorized", false)) {
+                type = AccountType.Administrator
+                Page.Technician
+            } else {
+                BackendSession.technician = false
+                BackendSession.save(context)
+                Page.Home
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: LoginRejected) {
+            BackendSession.clear(context)
+            registrationNotice = "Your session expired. Please sign in again."
+            Page.Login
+        } catch (e: Exception) {
+            registrationNotice = "Can't reach the server. Check the server address below, then sign in."
+            Page.Login
+        }
+    }
     BackHandler(page != Page.Welcome) {
         page = when (page) {
-            Page.BeaconTest -> Page.Places
-            Page.Navigation, Page.Places, Page.LiveSignals, Page.Profile -> Page.Home
+            Page.BeaconTest -> Page.Home
+            Page.Navigation -> Page.Places
+            Page.Places, Page.LiveSignals, Page.Profile -> Page.Home
             Page.Home, Page.Technician -> { signOut(); Page.Welcome }
             Page.Register -> Page.Login
             Page.Login -> Page.Welcome
@@ -161,7 +194,7 @@ private fun AirportApp() {
             if (tabIndex >= 0) MainBottomBar(
                 selected = tabIndex,
                 onHome = { page = Page.Home },
-                onSearch = { destinationCategory = null; placesQuery = ""; page = Page.Places },
+                onSearch = { searchCategory = PlaceCategory.All; page = Page.Places },
                 onLive = { page = Page.LiveSignals },
                 onProfile = { page = Page.Profile }
             )
@@ -179,6 +212,7 @@ private fun AirportApp() {
         ) { current ->
             when (current) {
                 Page.Welcome -> WelcomeScreen({ page = Page.Login }, { page = Page.Login })
+                Page.Restoring -> RestoringScreen()
                 Page.Login -> LoginScreen(
                     type, { type = it }, { page = if (type == AccountType.Administrator) Page.Technician else Page.Home },
                     { registrationNotice = ""; page = Page.Register }, registeredEmail, registrationNotice
@@ -194,17 +228,15 @@ private fun AirportApp() {
                 )
                 Page.Home -> HomeScreen(
                     onCategory = { destinationCategory = it; placesQuery = ""; page = Page.Places },
-                    onSearch = { destinationCategory = null; placesQuery = ""; page = Page.Places },
+                    onSearch = { searchCategory = PlaceCategory.All; page = Page.Places },
                     onNavigate = { destination = it; selectedDestination = null; page = Page.Navigation },
                     onSignOut = { signOut() },
                     onLiveSignals = { page = Page.LiveSignals },
                     onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest },
-                    onProfile = { page = Page.Profile }
+                    onProfile = { page = Page.Profile },
+                    onQuick = { searchCategory = it; page = Page.Places }
                 )
-                Page.Places -> PlacesScreen(destinationCategory, { page = Page.Home }, onBeacon = {
-                    selectedBeaconId = it.id
-                    page = Page.BeaconTest
-                }, query = placesQuery, onQueryChange = { placesQuery = it }) {
+                Page.Places -> DestinationSearchScreen(searchCategory, onBack = { page = Page.Home }) {
                     selectedDestination = it
                     destination = it.name
                     page = Page.Navigation
@@ -215,16 +247,30 @@ private fun AirportApp() {
                     onRoutes = { page = Page.Navigation },
                     onDiagnostics = { page = Page.LiveSignals },
                     initialBeaconId = selectedBeaconId,
-                    onBack = { page = Page.Places }
+                    onBack = { page = Page.Home }
                 )
                 Page.LiveSignals -> LiveBeaconScreen(onBack = { page = Page.Home })
                 Page.Profile -> ProfileScreen(onBack = { page = Page.Home }, onSignOut = { signOut() })
                 Page.Technician -> TechnicianScreen(onSignOut = { signOut() })
-                Page.Navigation -> PlacesScreen(null, { page = Page.Home },
-                    onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest },
-                    query = placesQuery, onQueryChange = { placesQuery = it }, onPlace = {})
+                Page.Navigation -> DestinationScreen(selectedDestination, onBack = { page = Page.Places })
             }
         }
+    }
+}
+@Composable
+private fun RestoringScreen() {
+    Column(
+        Modifier.fillMaxSize().background(Color(0xFFF3F7FF)),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(72.dp).background(LightBlue, CircleShape), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Flight, null, tint = Blue, modifier = Modifier.size(38.dp))
+        }
+        Spacer(Modifier.height(18.dp))
+        CircularProgressIndicator(color = Blue, modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+        Spacer(Modifier.height(12.dp))
+        Text("Signing you in…", color = Muted)
     }
 }
 @Composable
@@ -307,6 +353,8 @@ private fun LoginScreen(type: AccountType, onType: (AccountType) -> Unit, onSign
                 }
                 BackendSession.token = token
                 BackendSession.email = email.trim()
+                BackendSession.technician = type == AccountType.Administrator
+                BackendSession.save(context)
                 password = ""
                 onSignIn()
             } catch (e: CancellationException) {
@@ -358,7 +406,8 @@ private fun LoginScreen(type: AccountType, onType: (AccountType) -> Unit, onSign
                 IconButton({ visible = !visible }) { Icon(if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, "Show password") }
             }, if (visible) VisualTransformation.None else PasswordVisualTransformation())
 
-            if (notice.isNotBlank()) Text(notice, color = Green, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+            if (notice.isNotBlank()) Text(notice, color = if (notice.startsWith("Account created")) Green else Color(0xFFB36528),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
             if (loginError != null) Text(loginError!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
 
             Spacer(Modifier.height(20.dp))
@@ -444,6 +493,247 @@ private fun AirportField(
         )
     )
 }
+// ───────────── Passenger: places & search ─────────────
+
+private enum class PlaceCategory(val label: String, val icon: ImageVector, val color: Color, val types: Set<String>) {
+    All("All", Icons.Default.Place, Ink, emptySet()),
+    Gates("Gates", Icons.Default.Flight, Blue, setOf("GATE", "CHECK_IN", "BAGGAGE_CLAIM", "SECURITY")),
+    Restrooms("Restrooms", Icons.Default.Wc, Color(0xFF0E9AA7), setOf("WC")),
+    Elevators("Elevators & stairs", Icons.Default.Elevator, Color(0xFF7C5CFC), setOf("ELEVATOR", "ESCALATOR", "STAIRS")),
+    Exits("Exits", Icons.Default.MeetingRoom, Color(0xFFE5484D), setOf("EXIT", "ENTRANCE")),
+    Help("Help & info", Icons.Default.Info, Color(0xFF2E7D32), setOf("INFORMATION", "ATM", "PARKING", "ROOM", "OTHER")),
+    Food("Food & shops", Icons.Default.Restaurant, Color(0xFFB36528), setOf("FOOD", "SHOP"))
+}
+
+private fun placeColor(type: String): Color =
+    PlaceCategory.entries.firstOrNull { type in it.types }?.color ?: Muted
+
+private fun placeIcon(type: String): ImageVector = when (type) {
+    "GATE", "CHECK_IN" -> Icons.Default.Flight
+    "WC" -> Icons.Default.Wc
+    "ELEVATOR" -> Icons.Default.Elevator
+    "ESCALATOR" -> Icons.Default.Escalator
+    "STAIRS" -> Icons.Default.Stairs
+    "EXIT" -> Icons.Default.MeetingRoom
+    "ENTRANCE" -> Icons.Default.DoorFront
+    "INFORMATION" -> Icons.Default.Info
+    "FOOD" -> Icons.Default.Restaurant
+    "SHOP" -> Icons.Outlined.ShoppingBag
+    "ATM" -> Icons.Default.LocalAtm
+    "PARKING" -> Icons.Default.LocalParking
+    "SECURITY" -> Icons.Default.Security
+    "BAGGAGE_CLAIM" -> Icons.Outlined.Luggage
+    else -> Icons.Default.Place
+}
+
+private fun placeTypeLabel(type: String): String = when (type) {
+    "WC" -> "Restroom"
+    "INFORMATION" -> "Information"
+    "FOOD" -> "Food & drink"
+    "CHECK_IN" -> "Check-in"
+    "BAGGAGE_CLAIM" -> "Baggage claim"
+    else -> type.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+// Everyday words people type, mapped to place types
+private val placeSynonyms = mapOf(
+    "WC" to listOf("restroom", "toilet", "bathroom", "washroom", "wc", "loo", "lavatory"),
+    "ELEVATOR" to listOf("elevator", "lift"),
+    "ESCALATOR" to listOf("escalator"),
+    "STAIRS" to listOf("stairs", "stairway", "steps"),
+    "EXIT" to listOf("exit", "way out", "emergency", "leave"),
+    "ENTRANCE" to listOf("entrance", "entry", "door"),
+    "INFORMATION" to listOf("information", "info", "help", "desk"),
+    "FOOD" to listOf("food", "cafe", "café", "coffee", "restaurant", "eat", "drink"),
+    "SHOP" to listOf("shop", "store", "duty free"),
+    "GATE" to listOf("gate", "boarding", "flight")
+)
+
+private fun placeMatches(d: ServerDestination, q: String): Boolean {
+    if (q.isEmpty()) return true
+    val needle = q.lowercase()
+    return d.name.lowercase().contains(needle) ||
+            placeSynonyms[d.type].orEmpty().any { it.startsWith(needle) || needle.startsWith(it) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DestinationSearchScreen(initialCategory: PlaceCategory, onBack: () -> Unit, onPick: (ServerDestination) -> Unit) {
+    var all by remember { mutableStateOf<List<ServerDestination>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var retry by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf("") }
+    var category by remember(initialCategory) { mutableStateOf(initialCategory) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = remember { FocusRequester() }
+
+    LaunchedEffect(retry) {
+        loading = true; error = null
+        try { all = requestDestinations("") }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { error = "Couldn't load places. Check the connection and try again." }
+        finally { loading = false }
+    }
+    LaunchedEffect(Unit) { if (initialCategory == PlaceCategory.All) runCatching { focus.requestFocus() } }
+
+    val q = query.trim()
+    val results = all.filter { d -> (category == PlaceCategory.All || d.type in category.types) && placeMatches(d, q) }
+        .sortedBy { it.name.lowercase() }
+
+    Column(Modifier.fillMaxSize().background(Color(0xFFF6F8FC))) {
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+            Text("Where to?", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+        }
+        OutlinedTextField(
+            query, { query = it },
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).focusRequester(focus),
+            placeholder = { Text("Gate, restroom, café…", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = if (query.isNotEmpty()) ({
+                IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear search") }
+            }) else null,
+            singleLine = true, shape = RoundedCornerShape(16.dp),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = Color.White, unfocusedContainerColor = Color.White,
+                focusedBorderColor = Blue, unfocusedBorderColor = Color(0xFFDCE3EE)
+            )
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(PlaceCategory.entries) { c ->
+                val selected = c == category
+                FilterChip(
+                    selected = selected,
+                    onClick = { category = c },
+                    label = { Text(c.label) },
+                    leadingIcon = { Icon(c.icon, null, Modifier.size(18.dp), tint = if (selected) Color.White else c.color) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = c.color, selectedLabelColor = Color.White
+                    )
+                )
+            }
+        }
+        when {
+            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            error != null -> Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(error!!, color = Danger, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = { retry++ }) { Text("Retry") }
+            }
+            results.isEmpty() -> Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Search, null, tint = Muted, modifier = Modifier.size(40.dp))
+                Spacer(Modifier.height(8.dp))
+                Text(if (q.isEmpty()) "Nothing in this category yet" else "No places match “$q”",
+                    color = Ink, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+                Text("Try “restroom”, “exit” or a gate number", color = Muted, textAlign = TextAlign.Center)
+            }
+            else -> LazyColumn(
+                Modifier.fillMaxSize().imePadding(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(results, key = { "${it.kind}:${it.id}" }) { d ->
+                    PlaceRow(d) { keyboard?.hide(); onPick(d) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaceRow(d: ServerDestination, onClick: () -> Unit) {
+    val color = placeColor(d.type)
+    Row(
+        Modifier.fillMaxWidth().shadow(1.dp, RoundedCornerShape(16.dp))
+            .background(Color.White, RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(46.dp).background(color.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(placeIcon(d.type), null, tint = color)
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(d.name, fontWeight = FontWeight.SemiBold, color = Ink, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${placeTypeLabel(d.type)} · ${d.floorName}", color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (d.name.contains("accessible", ignoreCase = true))
+            Icon(Icons.Default.Accessible, "Wheelchair accessible", tint = Blue, modifier = Modifier.padding(end = 4.dp))
+        Icon(Icons.Default.ChevronRight, null, tint = Muted)
+    }
+}
+
+@Composable
+private fun DestinationScreen(d: ServerDestination?, onBack: () -> Unit) {
+    if (d == null) { LaunchedEffect(Unit) { onBack() }; return }
+    val color = placeColor(d.type)
+    Column(
+        Modifier.fillMaxSize().background(Color(0xFFF6F8FC)).verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        IconButton(onClick = onBack, modifier = Modifier.offset(x = (-12).dp)) { Icon(Icons.Default.ArrowBack, "Back") }
+        Box(Modifier.size(84.dp).background(color.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(placeIcon(d.type), null, tint = color, modifier = Modifier.size(42.dp))
+        }
+        Text(d.name, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+        Text("${placeTypeLabel(d.type)} · ${d.floorName}", color = Muted, fontSize = 16.sp)
+        if (d.name.contains("accessible", ignoreCase = true)) InfoChip("♿ Wheelchair accessible", Blue)
+        if (d.type == "EXIT") InfoChip("🚪 Emergency exits never use elevators", Color(0xFFE5484D))
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = { }, enabled = false,
+            modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(14.dp)
+        ) {
+            Icon(Icons.Default.Navigation, null); Spacer(Modifier.width(8.dp))
+            Text("Start navigation", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        Text("Step-by-step directions are being added in the next update.", color = Muted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun QuickPlaces(onQuick: (PlaceCategory) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        listOf(
+            PlaceCategory.Restrooms to "Restroom",
+            PlaceCategory.Elevators to "Elevator",
+            PlaceCategory.Exits to "Exit"
+        ).forEach { (c, label) ->
+            Column(
+                Modifier.weight(1f).clip(RoundedCornerShape(16.dp)).background(Color.White)
+                    .clickable { onQuick(c) }.padding(vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(Modifier.size(36.dp).background(c.color.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(c.icon, null, tint = c.color, modifier = Modifier.size(20.dp))
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(label, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingSwitch(icon: ImageVector, title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = Blue)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Ink, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = Muted, fontSize = 12.sp)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
 // ───────────── Home: live "walking corridor" ─────────────
 
 private data class CorridorPin(
@@ -468,7 +758,7 @@ private fun corridorDistanceText(d: Double): String = when {
 @Composable
 private fun HomeScreen(onCategory: (PlaceType) -> Unit, onSearch: () -> Unit, onNavigate: (String) -> Unit,
                        onSignOut: () -> Unit, onLiveSignals: () -> Unit, onBeacon: (RegisteredBeacon) -> Unit,
-                       onProfile: () -> Unit) {
+                       onProfile: () -> Unit, onQuick: (PlaceCategory) -> Unit = {}) {
     var beacons by remember { mutableStateOf<List<RegisteredBeacon>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf<String?>(null) }
@@ -580,7 +870,8 @@ private fun HomeScreen(onCategory: (PlaceType) -> Unit, onSearch: () -> Unit, on
             Text("Where do you want to go?", color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.height(12.dp))
-
+        QuickPlaces(onQuick)
+        Spacer(Modifier.height(12.dp))
         NearestCard(
             nearest = nearest,
             arrived = nearest != null && nearest.beacon.id == arrivedId,
@@ -886,7 +1177,7 @@ private fun MainBottomBar(selected: Int = 0, onHome: () -> Unit = {}, onSearch: 
 @Composable
 private fun ProfileScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
     val email = BackendSession.email.orEmpty()
-
+    val context = LocalContext.current
     Scaffold(
         containerColor = Color(0xFFF3F7FF),
         topBar = {
@@ -909,8 +1200,26 @@ private fun ProfileScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
                     ProfileRow(Icons.Outlined.Email, "Email", email)
                     HorizontalDivider(color = Color(0xFFE5EAF2))
                     ProfileRow(Icons.Outlined.Person, "Account type", "Passenger")
+                }
+            }
+
+            SectionHeader("Accessibility")
+            Surface(Modifier.fillMaxWidth(), RoundedCornerShape(18.dp), color = Color.White, shadowElevation = 2.dp) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    SettingSwitch(Icons.Default.Accessible, "Step-free routes",
+                        "Avoid stairs and escalators; use elevators and ramps", AccessibilityPrefs.stepFree) {
+                        AccessibilityPrefs.update(context, stepFree = it)
+                    }
                     HorizontalDivider(color = Color(0xFFE5EAF2))
-                    ProfileRow(Icons.Outlined.Info, "App version", "1.0 demo")
+                    SettingSwitch(Icons.Default.Vibration, "Vibrate at turns",
+                        "A short buzz before each turn and on arrival", AccessibilityPrefs.vibrate) {
+                        AccessibilityPrefs.update(context, vibrate = it)
+                    }
+                    HorizontalDivider(color = Color(0xFFE5EAF2))
+                    SettingSwitch(Icons.Default.RecordVoiceOver, "Read directions aloud",
+                        "Spoken instructions such as “Turn left in 5 metres”", AccessibilityPrefs.speak) {
+                        AccessibilityPrefs.update(context, speak = it)
+                    }
                 }
             }
 
@@ -921,10 +1230,10 @@ private fun ProfileScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE5484D))
             ) { Text("Sign out", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+            Text("Version 1.0 demo", color = Muted, fontSize = 12.sp)
         }
     }
 }
-
 @Composable
 private fun ProfileRow(icon: ImageVector, label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -942,7 +1251,8 @@ private data class ServerDestination(
     val type: String,
     val floorId: Long,
     val floorName: String,
-    val navigationNodeId: Long
+    val navigationNodeId: Long,
+    val kind: String = "facility"
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1020,7 +1330,8 @@ private suspend fun requestDestinations(query: String): List<ServerDestination> 
             ServerDestination(
                 id = item.getLong("id"), name = item.getString("name"),
                 type = item.getString("type"), floorId = item.getLong("floor_id"),
-                floorName = item.getString("floor_name"), navigationNodeId = item.getLong("navigation_node_id")
+                floorName = item.getString("floor_name"), navigationNodeId = item.getLong("navigation_node_id"),
+                kind = item.optString("kind", "facility")
             )
         }
     } finally {
@@ -1092,6 +1403,30 @@ private object ServerConfig {
     }
 }
 private val BACKEND_URL: String get() = ServerConfig.url
+// Accessibility preferences, saved on the phone. Used by navigation.
+private object AccessibilityPrefs {
+    private const val PREFS = "airnav_accessibility"
+    var stepFree by mutableStateOf(false)
+        private set
+    var vibrate by mutableStateOf(true)
+        private set
+    var speak by mutableStateOf(false)
+        private set
+    private fun prefs(c: android.content.Context) =
+        c.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+    fun load(c: android.content.Context) {
+        val p = prefs(c)
+        stepFree = p.getBoolean("step_free", false)
+        vibrate = p.getBoolean("vibrate", true)
+        speak = p.getBoolean("speak", false)
+    }
+    fun update(c: android.content.Context, stepFree: Boolean = this.stepFree,
+               vibrate: Boolean = this.vibrate, speak: Boolean = this.speak) {
+        this.stepFree = stepFree; this.vibrate = vibrate; this.speak = speak
+        prefs(c).edit().putBoolean("step_free", stepFree).putBoolean("vibrate", vibrate)
+            .putBoolean("speak", speak).apply()
+    }
+}
 
 // Accepts "192.168.1.20", "192.168.1.20:8080" or "http://192.168.1.20:8080" and returns a clean base URL.
 private fun normalizeServerUrl(input: String): String? {
@@ -1166,10 +1501,27 @@ private fun ServerSettingsDialog(onDismiss: () -> Unit) {
 }
 
 
-// Memory only: no password or token is written to disk.
+// Session token: kept in memory and in the app's private storage, so the user stays signed in.
 private object BackendSession {
+    private const val PREFS = "airnav_session"
     var token: String? = null
     var email: String? = null
+    var technician: Boolean = false
+    private fun prefs(c: android.content.Context) =
+        c.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+    fun load(c: android.content.Context) {
+        val p = prefs(c)
+        token = p.getString("token", null)
+        email = p.getString("email", null)
+        technician = p.getBoolean("technician", false)
+    }
+    fun save(c: android.content.Context) {
+        prefs(c).edit().putString("token", token).putString("email", email).putBoolean("technician", technician).apply()
+    }
+    fun clear(c: android.content.Context) {
+        token = null; email = null; technician = false
+        prefs(c).edit().clear().apply()
+    }
 }
 
 private class LoginRejected(message: String) : Exception(message)
