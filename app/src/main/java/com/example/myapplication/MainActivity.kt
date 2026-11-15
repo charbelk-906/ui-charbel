@@ -95,6 +95,7 @@ private val Green = Color(0xFF09A87B)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ServerConfig.load(this)
         setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Blue)) { AirportApp() } }
     }
 }
@@ -286,6 +287,7 @@ private fun LoginScreen(type: AccountType, onType: (AccountType) -> Unit, onSign
     var loginError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var showServer by remember { mutableStateOf(false) }
 
     fun submitLogin() {
         if (loading) return
@@ -379,6 +381,14 @@ private fun LoginScreen(type: AccountType, onType: (AccountType) -> Unit, onSign
             Spacer(Modifier.height(10.dp))
             Text("New here?", color = Muted)
             TextButton(onClick = onRegister, enabled = !loading) { Text("Create an account", fontWeight = FontWeight.SemiBold) }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp), color = Color(0xFFE5EAF2))
+            TextButton(onClick = { showServer = true }, enabled = !loading) {
+                Icon(Icons.Outlined.Storage, null, Modifier.size(16.dp), tint = Muted)
+                Spacer(Modifier.width(6.dp))
+                Text("Server: ${BACKEND_URL.removePrefix("http://")}", color = Muted, fontSize = 12.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (showServer) ServerSettingsDialog { showServer = false }
         }
     }
 }
@@ -876,6 +886,7 @@ private fun MainBottomBar(selected: Int = 0, onHome: () -> Unit = {}, onSearch: 
 @Composable
 private fun ProfileScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
     val email = BackendSession.email.orEmpty()
+
     Scaffold(
         containerColor = Color(0xFFF3F7FF),
         topBar = {
@@ -1065,8 +1076,94 @@ private fun DetailedRouteMap(destination: String) {
     Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) { Box(Modifier.size(43.dp).background(bg, CircleShape), contentAlignment = Alignment.Center) { Icon(icon, null, tint = tint) }; Text(value, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold); Text(unit, color = Muted, fontSize = 12.sp) }
 }
 
-// Development backend on the other laptop. Update if its Wi-Fi IP changes.
-private const val BACKEND_URL = "http://192.168.10.116:8080"
+// Backend address: saved on the phone, changeable from the login screen or the technician Account tab.
+private object ServerConfig {
+    private const val PREFS = "airnav_settings"
+    private const val KEY = "backend_url"
+    const val DEFAULT = "http://192.168.10.116:8080"
+    var url by mutableStateOf(DEFAULT)
+        private set
+    fun load(context: android.content.Context) {
+        url = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getString(KEY, DEFAULT) ?: DEFAULT
+    }
+    fun save(context: android.content.Context, newUrl: String) {
+        url = newUrl
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit().putString(KEY, newUrl).apply()
+    }
+}
+private val BACKEND_URL: String get() = ServerConfig.url
+
+// Accepts "192.168.1.20", "192.168.1.20:8080" or "http://192.168.1.20:8080" and returns a clean base URL.
+private fun normalizeServerUrl(input: String): String? {
+    var s = input.trim().trimEnd('/')
+    if (s.isEmpty()) return null
+    if (!s.startsWith("http://") && !s.startsWith("https://")) s = "http://$s"
+    val u = runCatching { URL(s) }.getOrNull() ?: return null
+    if (u.host.isNullOrBlank() || u.host.contains(' ') || (u.path.isNotEmpty() && u.path != "/")) return null
+    val port = if (u.port == -1 && u.protocol == "http") 8080 else u.port
+    return if (port == -1) "${u.protocol}://${u.host}" else "${u.protocol}://${u.host}:$port"
+}
+
+private suspend fun testServer(url: String): Boolean = withContext(Dispatchers.IO) {
+    val c = URL("$url/health").openConnection() as HttpURLConnection
+    try {
+        c.connectTimeout = 4_000; c.readTimeout = 4_000; c.instanceFollowRedirects = false
+        c.responseCode == 200
+    } catch (_: IOException) { false } finally { c.disconnect() }
+}
+
+@Composable
+private fun ServerSettingsDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf(ServerConfig.url.removePrefix("http://")) }
+    var testing by remember { mutableStateOf(false) }
+    var ok by remember { mutableStateOf<Boolean?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val normalized = normalizeServerUrl(text)
+
+    AlertDialog(
+        onDismissRequest = { if (!testing) onDismiss() },
+        icon = { Icon(Icons.Outlined.Storage, null) },
+        title = { Text("Server address") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("The laptop running the backend, on the same Wi-Fi. On the laptop, run ipconfig and use the IPv4 Address.",
+                    color = Muted, fontSize = 13.sp)
+                OutlinedTextField(
+                    text, { text = it; ok = null; message = null }, Modifier.fillMaxWidth(),
+                    singleLine = true, shape = RoundedCornerShape(12.dp),
+                    label = { Text("IP address") }, placeholder = { Text("192.168.1.20") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    isError = text.isNotBlank() && normalized == null
+                )
+                Text(normalized?.let { "Will use: $it" } ?: "Enter an address like 192.168.1.20", color = Muted, fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = {
+                        val target = normalized ?: return@OutlinedButton
+                        testing = true; message = null
+                        scope.launch {
+                            val reachable = testServer(target)
+                            testing = false; ok = reachable
+                            message = if (reachable) "✓ Connected" else "✗ Can't reach it. Same Wi-Fi? Backend running? Windows Firewall?"
+                        }
+                    },
+                    enabled = normalized != null && !testing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (testing) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)) }
+                    Text(if (testing) "Testing…" else "Test connection")
+                }
+                message?.let { Text(it, color = if (ok == true) Green else Color(0xFFE5484D), fontSize = 13.sp) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { normalized?.let { ServerConfig.save(context, it) }; onDismiss() },
+                enabled = normalized != null && !testing) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !testing) { Text("Cancel") } }
+    )
+}
 
 
 // Memory only: no password or token is written to disk.
@@ -2309,6 +2406,7 @@ private fun TechBeaconForm(
 @Composable
 private fun TechAccountTab(locationName: String, connected: Boolean, onSignOut: () -> Unit) {
     val email = BackendSession.email.orEmpty()
+    var showServer by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -2329,6 +2427,11 @@ private fun TechAccountTab(locationName: String, connected: Boolean, onSignOut: 
             }
         }
         Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = { showServer = true }, modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp)) {
+            Icon(Icons.Outlined.Storage, null); Spacer(Modifier.width(8.dp)); Text("Change server address")
+        }
+        if (showServer) ServerSettingsDialog { showServer = false }
         Button(
             onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Danger)
