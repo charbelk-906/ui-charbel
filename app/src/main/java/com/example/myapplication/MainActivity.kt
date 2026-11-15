@@ -1,5 +1,26 @@
 package com.example.myapplication
 
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -62,6 +83,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.style.TextOverflow
 
 private val Ink = Color(0xFF071027)
 private val Blue = Color(0xFF1264F5)
@@ -76,8 +98,7 @@ class MainActivity : ComponentActivity() {
         setContent { MaterialTheme(colorScheme = lightColorScheme(primary = Blue)) { AirportApp() } }
     }
 }
-
-private enum class Page { Welcome, Login, Register, Home, Places, Navigation, Technician, LiveSignals, BeaconTest }
+private enum class Page { Welcome, Login, Register, Home, Places, Navigation, Technician, LiveSignals, BeaconTest, Profile }
 private enum class AccountType { User, Administrator }
 private enum class PlaceType(val label: String, val icon: ImageVector, val color: Color) {
     Gate("Gates", Icons.Default.Flight, Blue),
@@ -87,7 +108,6 @@ private enum class PlaceType(val label: String, val icon: ImageVector, val color
     More("More", Icons.Default.MoreHoriz, Muted)
 }
 private data class AirportPlace(val name: String, val detail: String, val type: PlaceType)
-
 @Composable
 private fun AirportApp() {
     var page by remember { mutableStateOf(Page.Welcome) }
@@ -100,6 +120,7 @@ private fun AirportApp() {
     var selectedBeaconId by remember { mutableStateOf<Long?>(null) }
     var placesQuery by remember { mutableStateOf("") }
     val appScope = rememberCoroutineScope()
+
     fun signOut() {
         val oldToken = BackendSession.token
         BackendSession.token = null
@@ -113,63 +134,98 @@ private fun AirportApp() {
             catch (_: Exception) { /* Local sign-out completes even if server is offline. */ }
         }
     }
+
     BackHandler(page != Page.Welcome) {
         page = when (page) {
             Page.BeaconTest -> Page.Places
-            Page.Navigation, Page.Places, Page.LiveSignals -> Page.Home
+            Page.Navigation, Page.Places, Page.LiveSignals, Page.Profile -> Page.Home
             Page.Home, Page.Technician -> { signOut(); Page.Welcome }
             Page.Register -> Page.Login
             Page.Login -> Page.Welcome
             else -> Page.Welcome
         }
     }
-    when (page) {
-        Page.Welcome -> WelcomeScreen({ page = Page.Login }, { page = Page.Login })
-        Page.Login -> LoginScreen(
-            type, { type = it }, { page = if (type == AccountType.Administrator) Page.Technician else Page.Home },
-            { registrationNotice = ""; page = Page.Register }, registeredEmail, registrationNotice
-        )
-        Page.Register -> RegistrationScreen(
-            onBack = { page = Page.Login },
-            onCreated = {
-                registeredEmail = it
-                registrationNotice = "Account created. Please sign in."
-                type = AccountType.User
-                page = Page.Login
-            }
-        )
-        Page.Home -> HomeScreen(
-            onCategory = { destinationCategory = it; placesQuery = ""; page = Page.Places },
-            onSearch = { destinationCategory = null; placesQuery = ""; page = Page.Places },
-            onNavigate = { destination = it; selectedDestination = null; page = Page.Navigation },
-            onSignOut = { signOut() },
-            onLiveSignals = { page = Page.LiveSignals },
-            onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest }
-        )
-        Page.Places -> PlacesScreen(destinationCategory, { page = Page.Home }, onBeacon = {
-            selectedBeaconId = it.id
-            page = Page.BeaconTest
-        }, query = placesQuery, onQueryChange = { placesQuery = it }) {
-            selectedDestination = it
-            destination = it.name
-            page = Page.Navigation
+
+    val tabIndex = when (page) {
+        Page.Home -> 0
+        Page.Places -> 1
+        Page.LiveSignals -> 2
+        Page.Profile -> 3
+        else -> -1
+    }
+
+    Scaffold(
+        containerColor = Color.White,
+        bottomBar = {
+            if (tabIndex >= 0) MainBottomBar(
+                selected = tabIndex,
+                onHome = { page = Page.Home },
+                onSearch = { destinationCategory = null; placesQuery = ""; page = Page.Places },
+                onLive = { page = Page.LiveSignals },
+                onProfile = { page = Page.Profile }
+            )
         }
-        Page.BeaconTest -> UserBeaconHomeScreen(
-            onSignOut = { signOut() },
-            onDestinations = { page = Page.Places },
-            onRoutes = { page = Page.Navigation },
-            onDiagnostics = { page = Page.LiveSignals },
-            initialBeaconId = selectedBeaconId,
-            onBack = { page = Page.Places }
-        )
-        Page.LiveSignals -> LiveBeaconScreen(onBack = { page = Page.Home })
-        Page.Technician -> TechnicianScreen(onSignOut = { signOut() })
-        Page.Navigation -> PlacesScreen(null, { page = Page.Home },
-            onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest },
-            query = placesQuery, onQueryChange = { placesQuery = it }, onPlace = {})
+    ) { padding ->
+        AnimatedContent(
+            targetState = page,
+            modifier = Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
+            transitionSpec = {
+                val forward = targetState.ordinal > initialState.ordinal
+                (fadeIn(tween(250)) + slideInHorizontally(tween(250)) { w -> if (forward) w / 6 else -w / 6 }) togetherWith
+                        fadeOut(tween(150))
+            },
+            label = "pages"
+        ) { current ->
+            when (current) {
+                Page.Welcome -> WelcomeScreen({ page = Page.Login }, { page = Page.Login })
+                Page.Login -> LoginScreen(
+                    type, { type = it }, { page = if (type == AccountType.Administrator) Page.Technician else Page.Home },
+                    { registrationNotice = ""; page = Page.Register }, registeredEmail, registrationNotice
+                )
+                Page.Register -> RegistrationScreen(
+                    technician = type == AccountType.Administrator,
+                    onBack = { page = Page.Login },
+                    onCreated = {
+                        registeredEmail = it
+                        registrationNotice = "Account created. Please sign in."
+                        page = Page.Login
+                    }
+                )
+                Page.Home -> HomeScreen(
+                    onCategory = { destinationCategory = it; placesQuery = ""; page = Page.Places },
+                    onSearch = { destinationCategory = null; placesQuery = ""; page = Page.Places },
+                    onNavigate = { destination = it; selectedDestination = null; page = Page.Navigation },
+                    onSignOut = { signOut() },
+                    onLiveSignals = { page = Page.LiveSignals },
+                    onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest },
+                    onProfile = { page = Page.Profile }
+                )
+                Page.Places -> PlacesScreen(destinationCategory, { page = Page.Home }, onBeacon = {
+                    selectedBeaconId = it.id
+                    page = Page.BeaconTest
+                }, query = placesQuery, onQueryChange = { placesQuery = it }) {
+                    selectedDestination = it
+                    destination = it.name
+                    page = Page.Navigation
+                }
+                Page.BeaconTest -> UserBeaconHomeScreen(
+                    onSignOut = { signOut() },
+                    onDestinations = { page = Page.Places },
+                    onRoutes = { page = Page.Navigation },
+                    onDiagnostics = { page = Page.LiveSignals },
+                    initialBeaconId = selectedBeaconId,
+                    onBack = { page = Page.Places }
+                )
+                Page.LiveSignals -> LiveBeaconScreen(onBack = { page = Page.Home })
+                Page.Profile -> ProfileScreen(onBack = { page = Page.Home }, onSignOut = { signOut() })
+                Page.Technician -> TechnicianScreen(onSignOut = { signOut() })
+                Page.Navigation -> PlacesScreen(null, { page = Page.Home },
+                    onBeacon = { selectedBeaconId = it.id; page = Page.BeaconTest },
+                    query = placesQuery, onQueryChange = { placesQuery = it }, onPlace = {})
+            }
+        }
     }
 }
-
 @Composable
 private fun WelcomeScreen(onStart: () -> Unit, onSignIn: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.White)) {
@@ -204,8 +260,9 @@ private fun WelcomeScreen(onStart: () -> Unit, onSignIn: () -> Unit) {
             Button(onStart, Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(16.dp)) {
                 Text("Get Started", fontSize = 17.sp); Spacer(Modifier.width(12.dp)); Icon(Icons.Default.ArrowForward, null)
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                Text("Already have an account?", color = Muted); TextButton(onSignIn) { Text("Sign In") }
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Already have an account?", color = Muted, textAlign = TextAlign.Center)
+                TextButton(onSignIn) { Text("Sign In") }
             }
         }
     }
@@ -272,58 +329,78 @@ private fun LoginScreen(type: AccountType, onType: (AccountType) -> Unit, onSign
     }
 
 
-    Box(Modifier.fillMaxSize().background(Color(0xFFF3F7FF)).safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(22.dp), contentAlignment = Alignment.TopCenter) {
-        Column(Modifier.fillMaxWidth().shadow(12.dp, RoundedCornerShape(24.dp)).background(Color.White, RoundedCornerShape(24.dp)).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(58.dp).background(Blue, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Default.Flight, null, tint = Color.White, modifier = Modifier.size(34.dp)) }
-            Spacer(Modifier.height(14.dp))
-            Text("Welcome to Beirut Hariri\nInternational Airport", color = Ink, fontWeight = FontWeight.ExtraBold, fontSize = 22.sp, textAlign = TextAlign.Center)
-            Text("Please select your account type and sign in", color = Muted, modifier = Modifier.padding(vertical = 14.dp), textAlign = TextAlign.Center)
-            Label("Account Type")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TypeButton("User", type == AccountType.User, Modifier.weight(1f)) { onType(AccountType.User) }
-                TypeButton("Technician", type == AccountType.Administrator, Modifier.weight(1f)) { onType(AccountType.Administrator) }
+    Box(Modifier.fillMaxSize().background(Color(0xFFF3F7FF)).safeDrawingPadding().imePadding().verticalScroll(rememberScrollState()).padding(20.dp), contentAlignment = Alignment.TopCenter) {
+        Column(
+            Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(26.dp)).background(Color.White, RoundedCornerShape(26.dp)).padding(horizontal = 22.dp, vertical = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(Modifier.size(64.dp).background(LightBlue, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Flight, null, tint = Blue, modifier = Modifier.size(34.dp))
             }
-            Spacer(Modifier.height(14.dp)); Label("Email")
-            AirportField(email, { email = it }, "Enter your email", Icons.Outlined.Email, KeyboardType.Email)
-            Spacer(Modifier.height(12.dp)); Label("Password")
-            AirportField(password, { password = it }, "Enter your password", Icons.Outlined.Lock, KeyboardType.Password, {
-                IconButton({ visible = !visible }) { Icon(if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, "Toggle password") }
+            Spacer(Modifier.height(16.dp))
+            Text("Sign in", color = Ink, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp)
+            Text("Beirut Hariri International Airport", color = Muted, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp, bottom = 22.dp))
+
+            Row(
+                Modifier.fillMaxWidth().background(Field, RoundedCornerShape(14.dp)).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                TypeButton("User", type == AccountType.User, Modifier.weight(1f), Icons.Outlined.Person) { onType(AccountType.User) }
+                TypeButton("Technician", type == AccountType.Administrator, Modifier.weight(1f), Icons.Outlined.Build) { onType(AccountType.Administrator) }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            AirportField(email, { email = it }, "Email", Icons.Outlined.Email, KeyboardType.Email)
+            Spacer(Modifier.height(12.dp))
+            AirportField(password, { password = it }, "Password", Icons.Outlined.Lock, KeyboardType.Password, {
+                IconButton({ visible = !visible }) { Icon(if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, "Show password") }
             }, if (visible) VisualTransformation.None else PasswordVisualTransformation())
-            TextButton({}, Modifier.align(Alignment.End)) { Text("Forgot password?", color = Ink, textDecoration = TextDecoration.Underline) }
-            TextButton(onClick = onRegister, enabled = !loading) { Text("Create new account") }
-            if (notice.isNotBlank()) Text(notice, color = Green)
-            if (loginError != null) {
-                Text(
-                    loginError!!,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-                )
-            }
+
+            if (notice.isNotBlank()) Text(notice, color = Green, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+            if (loginError != null) Text(loginError!!, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+
+            Spacer(Modifier.height(20.dp))
             Button(
                 onClick = {
                     if (Build.VERSION.SDK_INT >= 37 &&
-                        context.checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") !=
-                        PackageManager.PERMISSION_GRANTED) {
+                        context.checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) {
                         permissionLauncher.launch("android.permission.ACCESS_LOCAL_NETWORK")
-                    } else {
-                        submitLogin()
-                    }
+                    } else submitLogin()
                 },
                 enabled = !loading,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Ink)
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Blue)
             ) {
-                Text(if (loading) "Signing in..." else "Sign In")
+                if (loading) { CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(Modifier.width(10.dp)) }
+                Text(if (loading) "Signing in..." else "Sign In", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             }
+
+            Spacer(Modifier.height(10.dp))
+            Text("New here?", color = Muted)
+            TextButton(onClick = onRegister, enabled = !loading) { Text("Create an account", fontWeight = FontWeight.SemiBold) }
         }
     }
 }
 
+
 @Composable private fun Label(text: String) = Text(text, fontWeight = FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp))
-@Composable private fun TypeButton(text: String, selected: Boolean, modifier: Modifier, click: () -> Unit) {
-    OutlinedButton(click, modifier.height(44.dp), shape = RoundedCornerShape(9.dp), colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) Ink else Color.White, contentColor = if (selected) Color.White else Ink)) { Text(text) }
+@Composable
+private fun TypeButton(text: String, selected: Boolean, modifier: Modifier, icon: ImageVector? = null, click: () -> Unit) {
+    val fg = if (selected) Color.White else Muted
+    Box(
+        modifier.height(46.dp).clip(RoundedCornerShape(12.dp))
+            .background(if (selected) Blue else Color.Transparent)
+            .clickable(onClick = click),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp)) {
+            if (icon != null) { Icon(icon, null, tint = fg, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)) }
+            Text(text, color = fg, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
+
 @Composable
 private fun AirportField(
     value: String,
@@ -334,65 +411,386 @@ private fun AirportField(
     trailing: (@Composable () -> Unit)? = null,
     transform: VisualTransformation = VisualTransformation.None
 ) {
-    val requester = remember { FocusRequester() }
-    var focused by remember { mutableStateOf(false) }
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    Column(Modifier.fillMaxWidth()) {
-        TextField(
-            value = value,
-            onValueChange = change,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusRequester(requester)
-                .onFocusChanged { focused = it.isFocused },
-            placeholder = { Text(hint) },
-            leadingIcon = { Icon(icon, null) },
-            trailingIcon = trailing,
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = keyboard),
-            visualTransformation = transform
+    OutlinedTextField(
+        value = value,
+        onValueChange = change,
+        modifier = Modifier.fillMaxWidth(),
+        placeholder = { Text(hint, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        leadingIcon = { Icon(icon, null) },
+        trailingIcon = trailing,
+        singleLine = true,
+        shape = RoundedCornerShape(14.dp),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+        visualTransformation = transform,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Blue,
+            unfocusedBorderColor = Color(0xFFDCE3EE),
+            focusedContainerColor = Color.White,
+            unfocusedContainerColor = Field,
+            focusedLeadingIconColor = Blue,
+            unfocusedLeadingIconColor = Muted,
+            unfocusedPlaceholderColor = Muted,
+            focusedPlaceholderColor = Muted
         )
+    )
+}
+// ───────────── Home: live "walking corridor" ─────────────
 
-        Text(if (focused) "Field focused" else "Field not focused")
+private data class CorridorPin(
+    val beacon: RegisteredBeacon,
+    val distance: Double?,   // estimated metres; null = not heard right now
+    val trend: Int,          // -1 getting closer, 0 steady, 1 moving away
+    val left: Boolean        // side of the road (fixed per beacon so pins don't jump)
+)
 
-        TextButton(onClick = {
-            requester.requestFocus()
-            keyboardController?.show()
-        }) {
-            Text("Focus this field")
+// Rough RSSI -> metres (log-distance model, n = 2.5). txAt1m = calibrated RSSI at 1 m from the DB.
+private fun corridorMetres(filteredRssi: Double, txAt1m: Int): Double {
+    val tx = if (txAt1m in -100..-30) txAt1m else -59
+    return Math.pow(10.0, (tx - filteredRssi) / 25.0).coerceIn(0.2, 50.0)
+}
+
+private fun corridorDistanceText(d: Double): String = when {
+    d < 1.0 -> "< 1 m"
+    d < 10.0 -> String.format(java.util.Locale.US, "%.1f m", d)
+    else -> String.format(java.util.Locale.US, "%.0f m", d)
+}
+
+@Composable
+private fun HomeScreen(onCategory: (PlaceType) -> Unit, onSearch: () -> Unit, onNavigate: (String) -> Unit,
+                       onSignOut: () -> Unit, onLiveSignals: () -> Unit, onBeacon: (RegisteredBeacon) -> Unit,
+                       onProfile: () -> Unit) {
+    var beacons by remember { mutableStateOf<List<RegisteredBeacon>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(reload) {
+        loading = true; loadError = null
+        try { beacons = requestRegisteredBeacons() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { loadError = "Can't reach the server. Check Wi-Fi and that the backend is running." }
+        finally { loading = false }
+    }
+
+    val context = LocalContext.current
+    val controller = remember(context, beacons) { ForegroundBeaconScanner(context, beacons) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (controller.hasPermissions()) controller.start() else controller.permissionDenied()
+    }
+    fun startScan() {
+        val lm = context.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+        val locationOn = if (Build.VERSION.SDK_INT >= 28) lm.isLocationEnabled
+        else lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER)
+        if (!locationOn) {
+            context.startActivity(android.content.Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            return
+        }
+        if (controller.hasPermissions()) controller.start() else permissionLauncher.launch(controller.neededPermissions())
+    }
+    LaunchedEffect(controller, loading) {
+        if (!loading && beacons.isNotEmpty() && controller.hasPermissions()) controller.start()
+    }
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(controller, owner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) controller.stop()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && !controller.scanning &&
+                beacons.isNotEmpty() && controller.hasPermissions()) controller.start()
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer); controller.stop() }
+    }
+
+    val haptics = LocalHapticFeedback.current
+    val smoothed = remember(controller) { mutableMapOf<Long, Double>() }
+    val history = remember(controller) { mutableMapOf<Long, ArrayDeque<Double>>() }
+    var pins by remember(controller) { mutableStateOf<List<CorridorPin>>(emptyList()) }
+    var arrivedId by remember(controller) { mutableStateOf<Long?>(null) }
+    var selectedId by remember { mutableStateOf<Long?>(null) }
+
+    LaunchedEffect(controller) {
+        val ordered = beacons.sortedBy { it.id }
+        while (true) {
+            controller.checkWhileScanning()
+            val now = android.os.SystemClock.elapsedRealtime()
+            val fresh = if (controller.scanning)
+                controller.snapshot().filterValues { isLiveReadingFresh(now, it.seenAt) } else emptyMap()
+            pins = ordered.mapIndexed { index, b ->
+                val reading = fresh[LiveBeaconIdentity(b.uuid.lowercase(java.util.Locale.ROOT), b.major, b.minor)]
+                if (reading == null) {
+                    smoothed.remove(b.id); history.remove(b.id)
+                    CorridorPin(b, null, 0, index % 2 == 0)
+                } else {
+                    val raw = corridorMetres(reading.filtered, b.txPower)
+                    val d = smoothed[b.id]?.let { it * 0.6 + raw * 0.4 } ?: raw
+                    smoothed[b.id] = d
+                    val h = history.getOrPut(b.id) { ArrayDeque() }
+                    h.addLast(d); if (h.size > 6) h.removeFirst()   // ~3 s of history
+                    val change = d - h.first()
+                    val trend = when { h.size < 4 -> 0; change < -0.4 -> -1; change > 0.4 -> 1; else -> 0 }
+                    CorridorPin(b, d, trend, index % 2 == 0)
+                }
+            }
+            val nearest = pins.filter { it.distance != null }.minByOrNull { it.distance!! }
+            val closeNow = nearest?.takeIf { it.distance!! < 1.0 }?.beacon?.id
+            arrivedId = when {
+                closeNow != null -> {
+                    if (closeNow != arrivedId) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    closeNow
+                }
+                nearest == null || nearest.distance!! > 1.6 -> null
+                else -> arrivedId.takeIf { it == nearest.beacon.id }
+            }
+            delay(500)
+        }
+    }
+
+    val heard = pins.filter { it.distance != null }
+    val nearest = heard.minByOrNull { it.distance!! }
+    val silent = pins.filter { it.distance == null }
+
+    Column(Modifier.fillMaxSize().background(Color(0xFFF6F8FC)).padding(horizontal = 18.dp)) {
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Hello 👋", color = Muted, fontSize = 14.sp)
+                Text("Your walk", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
+            }
+            ScanStatusChip(controller.scanning, heard.size)
+        }
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            Modifier.fillMaxWidth().height(50.dp).shadow(1.dp, RoundedCornerShape(14.dp))
+                .background(Color.White, RoundedCornerShape(14.dp)).clickable(onClick = onSearch)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Search, null, tint = Muted)
+            Spacer(Modifier.width(10.dp))
+            Text("Where do you want to go?", color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.height(12.dp))
+
+        NearestCard(
+            nearest = nearest,
+            arrived = nearest != null && nearest.beacon.id == arrivedId,
+            scanning = controller.scanning,
+            error = controller.error,
+            onStart = { startScan() },
+            onOpen = { nearest?.let { onBeacon(it.beacon) } }
+        )
+        Spacer(Modifier.height(12.dp))
+
+        Box(Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(24.dp)).background(Color.White)) {
+            when {
+                loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                loadError != null -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(loadError!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { reload++ }) { Text("Retry") }
+                }
+                beacons.isEmpty() -> Text("No beacons registered for this location yet.", color = Muted,
+                    textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(24.dp))
+                else -> {
+                    CorridorView(pins, arrivedId, selectedId,
+                        onSelect = { selectedId = if (selectedId == it) null else it }, onOpen = onBeacon)
+                    if (controller.scanning && heard.isEmpty()) Text(
+                        "Walk around — nearby beacons will appear along your path",
+                        color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(16.dp)
+                            .background(Color.White.copy(alpha = .92f), RoundedCornerShape(10.dp)).padding(8.dp)
+                    )
+                }
+            }
+        }
+
+        Text(
+            if (controller.scanning && silent.isNotEmpty()) "Out of range: " + silent.joinToString { it.beacon.label } else " ",
+            color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(vertical = 8.dp)
+        )
+    }
+}
+
+@Composable
+private fun ScanStatusChip(scanning: Boolean, count: Int) {
+    val color = if (scanning) Green else Muted
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = .12f)).padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(8.dp).background(color, CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(if (scanning) "Live · $count" else "Off", color = color, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun NearestCard(nearest: CorridorPin?, arrived: Boolean, scanning: Boolean, error: String?,
+                        onStart: () -> Unit, onOpen: () -> Unit) {
+    val needsStart = !scanning || error != null
+    val bg by animateColorAsState(when { needsStart -> Ink; arrived -> Green; else -> Blue }, label = "nearestBg")
+    val d = nearest?.distance
+    val (title, subtitle) = when {
+        error != null -> "Scanner is off" to error
+        !scanning -> "Tap to find where you are" to "Uses the Bluetooth beacons around you"
+        nearest == null || d == null -> "Looking for beacons…" to "Walk around a little"
+        arrived -> "You're at ${nearest.beacon.label}" to "Right next to you"
+        else -> "Near ${nearest.beacon.label}" to ("About ${corridorDistanceText(d)} away" +
+                when (nearest.trend) { -1 -> " · getting closer"; 1 -> " · moving away"; else -> "" })
+    }
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(bg)
+            .clickable { if (needsStart) onStart() else if (nearest != null) onOpen() }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(46.dp).background(Color.White.copy(alpha = .18f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(when { needsStart -> Icons.Default.Bluetooth; arrived -> Icons.Default.CheckCircle; else -> Icons.Default.NearMe },
+                null, tint = Color.White)
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, color = Color.White.copy(alpha = .85f), fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (!needsStart && nearest != null) Icon(Icons.Default.ChevronRight, null, tint = Color.White)
+    }
+}
+
+@Composable
+private fun CorridorView(pins: List<CorridorPin>, arrivedId: Long?, selectedId: Long?,
+                         onSelect: (Long) -> Unit, onOpen: (RegisteredBeacon) -> Unit) {
+    val maxMetres = 15.0
+    val transition = rememberInfiniteTransition(label = "corridor")
+    val pulse by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1600), RepeatMode.Restart), label = "pulse")
+    val flow by transition.animateFloat(0f, 1f, infiniteRepeatable(tween(1400, easing = LinearEasing), RepeatMode.Restart), label = "flow")
+    val tickPaint = remember { android.graphics.Paint().apply { isAntiAlias = true; color = 0xFF9AA8BF.toInt(); textAlign = android.graphics.Paint.Align.RIGHT } }
+    val youPaint = remember { android.graphics.Paint().apply { isAntiAlias = true; color = 0xFF071027.toInt(); textAlign = android.graphics.Paint.Align.CENTER; isFakeBoldText = true } }
+    val nearestId = pins.filter { it.distance != null }.minByOrNull { it.distance!! }?.beacon?.id
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val roadHalf = 34.dp
+        val dotSize = 30.dp
+        val heightPx = constraints.maxHeight.toFloat()
+        val topPx = with(density) { 40.dp.toPx() }
+        val userPx = heightPx - with(density) { 64.dp.toPx() }
+        // sqrt scale: gives more room to the near beacons, which matter most
+        fun yFor(d: Double): Float =
+            userPx - (userPx - topPx) * kotlin.math.sqrt(d.coerceIn(0.0, maxMetres) / maxMetres).toFloat()
+
+        Canvas(Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val half = roadHalf.toPx()
+            // road surface + edges
+            drawRect(Color(0xFFEFF3FA), Offset(cx - half, 0f), androidx.compose.ui.geometry.Size(half * 2, size.height))
+            drawLine(Color(0xFFB8C4D8), Offset(cx - half, 0f), Offset(cx - half, size.height), 4.dp.toPx())
+            drawLine(Color(0xFFB8C4D8), Offset(cx + half, 0f), Offset(cx + half, size.height), 4.dp.toPx())
+            // flowing centre dashes
+            val dash = 16.dp.toPx(); val period = dash + 14.dp.toPx()
+            var y = size.height + period - flow * period
+            while (y > -period) {
+                drawLine(Color(0xFFC9D3E3), Offset(cx, y), Offset(cx, y - dash), 3.dp.toPx(), cap = StrokeCap.Round)
+                y -= period
+            }
+            // distance markers
+            tickPaint.textSize = 10.sp.toPx(); youPaint.textSize = 12.sp.toPx()
+            listOf(1, 3, 5, 10, 15).forEach { m ->
+                val ty = yFor(m.toDouble())
+                drawLine(Color(0xFFD5DDEA), Offset(cx - half, ty), Offset(cx + half, ty), 1.5.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
+                drawContext.canvas.nativeCanvas.drawText("$m m", cx + half - 4.dp.toPx(), ty - 4.dp.toPx(), tickPaint)
+            }
+            // you (pulsing)
+            drawCircle(Blue.copy(alpha = 0.28f * (1f - pulse)), 14.dp.toPx() + 28.dp.toPx() * pulse, Offset(cx, userPx))
+            drawCircle(Color.White, 13.dp.toPx(), Offset(cx, userPx))
+            drawCircle(Blue, 9.dp.toPx(), Offset(cx, userPx))
+            drawContext.canvas.nativeCanvas.drawText("You", cx, userPx + 32.dp.toPx(), youPaint)
+        }
+
+        // place pins, pushing them apart if two on the same side are too close
+        val minGapPx = with(density) { 60.dp.toPx() }
+        val targetY = HashMap<Long, Float>()
+        for (side in listOf(true, false)) {
+            var last = Float.MAX_VALUE
+            pins.filter { it.left == side && it.distance != null }.sortedBy { it.distance }.forEach { p ->
+                var py = yFor(p.distance!!)
+                if (py > last - minGapPx) py = last - minGapPx
+                py = py.coerceAtLeast(topPx)
+                targetY[p.beacon.id] = py
+                last = py
+            }
+        }
+        val sideWidth = maxWidth / 2 - roadHalf + dotSize / 2 - 6.dp
+        pins.filter { it.distance != null }.forEach { p ->
+            key(p.beacon.id) {
+                val animY by animateFloatAsState(targetY.getValue(p.beacon.id),
+                    spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessLow), label = "pinY")
+                val x = if (p.left) 6.dp else maxWidth / 2 + roadHalf - dotSize / 2
+                BeaconPin(
+                    p, nearest = p.beacon.id == nearestId, arrived = p.beacon.id == arrivedId,
+                    selected = p.beacon.id == selectedId,
+                    modifier = Modifier.width(sideWidth).offset(x = x, y = with(density) { animY.toDp() } - 26.dp),
+                    onClick = { onSelect(p.beacon.id) }, onOpen = { onOpen(p.beacon) }
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun HomeScreen(onCategory: (PlaceType) -> Unit, onSearch: () -> Unit, onNavigate: (String) -> Unit,
-                       onSignOut: () -> Unit, onLiveSignals: () -> Unit, onBeacon: (RegisteredBeacon) -> Unit) {
-    Scaffold(containerColor = Color.White, bottomBar = { MainBottomBar(onSearch = onSearch, onRoutes = onSearch) }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Spacer(Modifier.height(4.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Welcome back", color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    Text(BackendSession.email.orEmpty(), color = Muted, fontSize = 13.sp)
-                }
-                TextButton(onClick = onSignOut) { Text("Sign out") }
-            }
-            OutlinedButton(onClick = onSearch, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(15.dp)) {
-                Icon(Icons.Default.Search, null)
-                Spacer(Modifier.width(12.dp))
-                Text("Search ESP32s, e.g. Beacon 4")
-                Spacer(Modifier.weight(1f))
-            }
-            Text("Your registered ESP32s", color = Ink, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-            RegisteredHomeMap(onBeacon)
-            TextButton(onClick = onSearch, modifier = Modifier.fillMaxWidth()) { Text("Find a beacon and open its live test") }
-            Spacer(Modifier.height(12.dp))
+private fun BeaconPin(p: CorridorPin, nearest: Boolean, arrived: Boolean, selected: Boolean, modifier: Modifier,
+                      onClick: () -> Unit, onOpen: () -> Unit) {
+    val d = p.distance ?: return
+    val strength = when { d < 2.0 -> Green; d < 6.0 -> Color(0xFFF5A524); else -> Color(0xFFE5484D) }
+    val dotColor by animateColorAsState(when { arrived -> Green; nearest -> Blue; else -> Color(0xFF8C99B0) }, label = "dot")
+    val trend = when (p.trend) { -1 -> " · closer"; 1 -> " · farther"; else -> "" }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (p.left) {
+            PinCard(p, d, strength, trend, nearest, selected, Modifier.weight(1f), onClick, onOpen)
+            Spacer(Modifier.width(6.dp))
+            PinDot(p.beacon.minor, dotColor, nearest)
+        } else {
+            PinDot(p.beacon.minor, dotColor, nearest)
+            Spacer(Modifier.width(6.dp))
+            PinCard(p, d, strength, trend, nearest, selected, Modifier.weight(1f), onClick, onOpen)
         }
     }
 }
 
+@Composable
+private fun PinDot(minor: Int, color: Color, nearest: Boolean) {
+    Box(
+        Modifier.size(30.dp).shadow(if (nearest) 6.dp else 2.dp, CircleShape).background(color, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("$minor", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun PinCard(p: CorridorPin, d: Double, strength: Color, trend: String, nearest: Boolean, selected: Boolean,
+                    modifier: Modifier, onClick: () -> Unit, onOpen: () -> Unit) {
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier.shadow(if (nearest) 4.dp else 1.dp, shape)
+            .background(if (selected) LightBlue else Color.White, shape)
+            .border(1.dp, if (nearest) Blue else Color(0xFFE3E8F0), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        horizontalAlignment = if (p.left) Alignment.End else Alignment.Start
+    ) {
+        Text(p.beacon.label, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).background(strength, CircleShape))
+            Spacer(Modifier.width(5.dp))
+            Text(corridorDistanceText(d) + trend, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (selected) Text("Open details ›", color = Blue, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = 4.dp).clickable(onClick = onOpen))
+    }
+}
 @Composable
 private fun RegisteredHomeMap(onBeacon: (RegisteredBeacon) -> Unit) {
     var beacons by remember { mutableStateOf<List<RegisteredBeacon>>(emptyList()) }
@@ -452,15 +850,81 @@ private fun AirportMap(modifier: Modifier, onNavigate: (String) -> Unit) {
 @Composable private fun MapLabel(icon: ImageVector, text: String, modifier: Modifier, click: () -> Unit) {
     Column(modifier.clickable(onClick = click), horizontalAlignment = Alignment.CenterHorizontally) { Icon(icon, null, tint = Muted); Text(text, color = Muted, fontSize = 12.sp) }
 }
-
-@Composable private fun MainBottomBar(onSearch: () -> Unit = {}, onRoutes: () -> Unit = {}) {
+@Composable
+private fun MainBottomBar(selected: Int = 0, onHome: () -> Unit = {}, onSearch: () -> Unit = {},
+                          onLive: () -> Unit = {}, onProfile: () -> Unit = {}) {
+    val items: List<Triple<ImageVector, String, () -> Unit>> = listOf(
+        Triple(Icons.Default.Home, "Home", onHome),
+        Triple(Icons.Default.Search, "Search", onSearch),
+        Triple(Icons.Default.Bluetooth, "Live scan", onLive),
+        Triple(Icons.Outlined.Person, "Profile", onProfile)
+    )
     NavigationBar(containerColor = Color.White) {
-        listOf(Icons.Default.Home to "Home", Icons.Default.Search to "Search", Icons.Outlined.Memory to "Beacons", Icons.Outlined.Notifications to "Alerts", Icons.Outlined.Person to "Profile").forEachIndexed { i, item ->
-            NavigationBarItem(i == 0, { when (i) { 1 -> onSearch(); 2 -> onRoutes(); else -> {} } }, { Icon(item.first, item.second) }, label = { Text(item.second, fontSize = 9.sp) }, colors = NavigationBarItemDefaults.colors(selectedIconColor = Blue, selectedTextColor = Blue, indicatorColor = Color.Transparent))
+        items.forEachIndexed { i, (icon, label, action) ->
+            NavigationBarItem(
+                selected = i == selected,
+                onClick = action,
+                icon = { Icon(icon, label) },
+                label = { Text(label, fontSize = 11.sp, maxLines = 1) },
+                colors = NavigationBarItemDefaults.colors(selectedIconColor = Blue, selectedTextColor = Blue, indicatorColor = LightBlue)
+            )
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfileScreen(onBack: () -> Unit, onSignOut: () -> Unit) {
+    val email = BackendSession.email.orEmpty()
+    Scaffold(
+        containerColor = Color(0xFFF3F7FF),
+        topBar = {
+            TopAppBar(title = { Text("Profile", fontWeight = FontWeight.Bold) },
+                navigationIcon = { IconButton(onBack) { Icon(Icons.Default.ArrowBack, "Back") } })
+        }
+    ) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Box(Modifier.size(88.dp).background(LightBlue, CircleShape), contentAlignment = Alignment.Center) {
+                Text(email.firstOrNull()?.uppercaseChar()?.toString() ?: "?", color = Blue, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(email, color = Ink, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+
+            Surface(Modifier.fillMaxWidth(), RoundedCornerShape(18.dp), color = Color.White, shadowElevation = 2.dp) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    ProfileRow(Icons.Outlined.Email, "Email", email)
+                    HorizontalDivider(color = Color(0xFFE5EAF2))
+                    ProfileRow(Icons.Outlined.Person, "Account type", "Passenger")
+                    HorizontalDivider(color = Color(0xFFE5EAF2))
+                    ProfileRow(Icons.Outlined.Info, "App version", "1.0 demo")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = onSignOut,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE5484D))
+            ) { Text("Sign out", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+        }
+    }
+}
+
+@Composable
+private fun ProfileRow(icon: ImageVector, label: String, value: String) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Blue)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, color = Muted, fontSize = 12.sp)
+            Text(value, color = Ink)
+        }
+    }
+}
 private data class ServerDestination(
     val id: Long,
     val name: String,
@@ -602,7 +1066,7 @@ private fun DetailedRouteMap(destination: String) {
 }
 
 // Development backend on the other laptop. Update if its Wi-Fi IP changes.
-private const val BACKEND_URL = "http://192.168.110.31:8080"
+private const val BACKEND_URL = "http://192.168.10.116:8080"
 
 
 // Memory only: no password or token is written to disk.
@@ -640,46 +1104,62 @@ private suspend fun requestLogin(email: String, password: String): String =
             connection.disconnect()
         }
     }
+private val TechAccent = Color(0xFFE07A1F)
+
 @Composable
-private fun RegistrationScreen(onBack: () -> Unit, onCreated: (String) -> Unit) {
+private fun SectionHeader(text: String) {
+    Text(text.uppercase(), color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.sp, modifier = Modifier.fillMaxWidth().padding(top = 10.dp))
+}
+
+@Composable
+private fun RegistrationScreen(technician: Boolean, onBack: () -> Unit, onCreated: (String) -> Unit) {
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmation by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var employeeId by remember { mutableStateOf("") }
+    var company by remember { mutableStateOf("") }
+    var accessCode by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val accent = if (technician) TechAccent else Blue
 
     fun submit() {
         if (loading) return
-        error = null
         val cleanEmail = email.trim()
-        if (!android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) {
-            error = "Enter a valid email address."
-            return
+        val first = firstName.trim()
+        val last = lastName.trim()
+        error = when {
+            technician && (first.isEmpty() || last.isEmpty()) -> "Enter your first and last name."
+            first.length > 100 || last.length > 100 -> "Names must be at most 100 characters."
+            cleanEmail.length > 150 || !android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches() -> "Enter a valid email address."
+            technician && !Regex("^\\+?[0-9 ]{7,20}$").matches(phone.trim()) -> "Enter a valid phone number."
+            technician && (employeeId.isBlank() || employeeId.trim().length > 50) -> "Enter your employee ID."
+            technician && company.trim().length > 100 -> "Company must be at most 100 characters."
+            password.codePointCount(0, password.length) < 15 || password.toByteArray(Charsets.UTF_8).size > 72 ->
+                "Use at least 15 characters for your password."
+            password != confirmation -> "Passwords do not match."
+            technician && accessCode.isBlank() -> "Enter the technician access code."
+            else -> null
         }
-        if (cleanEmail.codePointCount(0, cleanEmail.length) > 150 ||
-            firstName.codePointCount(0, firstName.length) > 100 ||
-            lastName.codePointCount(0, lastName.length) > 100) {
-            error = "Email must be at most 150 characters; names at most 100."
-            return
-        }
-        if (password.codePointCount(0, password.length) < 15 || password.toByteArray(Charsets.UTF_8).size > 72) {
-            error = "Use at least 15 characters and at most 72 UTF-8 bytes for your password."
-            return
-        }
-        if (password != confirmation) {
-            error = "Passwords do not match."
-            return
-        }
+        if (error != null) return
+
+        val body = JSONObject().put("first_name", first).put("last_name", last)
+            .put("email", cleanEmail).put("password", password)
+        if (technician) body.put("phone", phone.trim()).put("employee_id", employeeId.trim())
+            .put("company", company.trim()).put("access_code", accessCode.trim())
+
         loading = true
         scope.launch {
             try {
-                requestRegistration(firstName.trim(), lastName.trim(), cleanEmail, password)
-                password = ""
-                confirmation = ""
+                requestRegistration(body, technician)
+                password = ""; confirmation = ""; accessCode = ""
                 onCreated(cleanEmail)
             } catch (e: CancellationException) {
                 throw e
@@ -688,7 +1168,7 @@ private fun RegistrationScreen(onBack: () -> Unit, onCreated: (String) -> Unit) 
             } catch (e: IOException) {
                 error = "Cannot reach the server. Check Wi-Fi and that Go is running."
             } catch (e: Exception) {
-                error = "Registration failed. Check network permissions and try again."
+                error = "Registration failed. Please try again."
             } finally {
                 loading = false
             }
@@ -699,43 +1179,94 @@ private fun RegistrationScreen(onBack: () -> Unit, onCreated: (String) -> Unit) 
         if (it) submit() else error = "Allow local network access to reach the backend."
     }
 
-    Column(
-        Modifier.fillMaxSize().background(Color(0xFFF3F7FF)).safeDrawingPadding()
-            .imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    val eye: @Composable () -> Unit = {
+        IconButton({ visible = !visible }) {
+            Icon(if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, "Show password")
+        }
+    }
+    val pwTransform = if (visible) VisualTransformation.None else PasswordVisualTransformation()
+
+    Box(
+        Modifier.fillMaxSize().background(Color(0xFFF3F7FF)).safeDrawingPadding().imePadding()
+            .verticalScroll(rememberScrollState()).padding(20.dp),
+        contentAlignment = Alignment.TopCenter
     ) {
-        TextButton(onClick = onBack, enabled = !loading) { Text("Back to Sign In") }
-        Text("Create account", color = Ink, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("Create a user account to explore the airport.", color = Muted)
-        Label("First name (optional)")
-        AirportField(firstName, { firstName = it }, "First name", Icons.Outlined.Person, KeyboardType.Text)
-        Label("Last name (optional)")
-        AirportField(lastName, { lastName = it }, "Last name", Icons.Outlined.Person, KeyboardType.Text)
-        Label("Email")
-        AirportField(email, { email = it }, "Email address", Icons.Outlined.Email, KeyboardType.Email)
-        Label("Password")
-        AirportField(password, { password = it }, "At least 15 characters", Icons.Outlined.Lock,
-            KeyboardType.Password, transform = PasswordVisualTransformation())
-        Label("Confirm password")
-        AirportField(confirmation, { confirmation = it }, "Repeat password", Icons.Outlined.Lock,
-            KeyboardType.Password, transform = PasswordVisualTransformation())
-        if (error != null) Text(error!!, color = MaterialTheme.colorScheme.error)
-        Button(
-            onClick = {
-                if (Build.VERSION.SDK_INT >= 37 &&
-                    context.checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) {
-                    permissionLauncher.launch("android.permission.ACCESS_LOCAL_NETWORK")
-                } else submit()
-            },
-            enabled = !loading,
-            modifier = Modifier.fillMaxWidth().height(52.dp)
-        ) { Text(if (loading) "Creating account..." else "Create Account") }
+        Column(
+            Modifier.fillMaxWidth().shadow(10.dp, RoundedCornerShape(26.dp))
+                .background(Color.White, RoundedCornerShape(26.dp)).padding(horizontal = 22.dp, vertical = 26.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(Modifier.size(64.dp).background(accent.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(if (technician) Icons.Outlined.Build else Icons.Outlined.PersonAdd, null, tint = accent, modifier = Modifier.size(32.dp))
+            }
+            Text(if (technician) "Technician registration" else "Create your account",
+                color = Ink, fontWeight = FontWeight.ExtraBold, fontSize = 24.sp, textAlign = TextAlign.Center)
+            Text(if (technician) "Set up a staff account to install and manage beacons."
+            else "Find gates, shops and services around the airport.",
+                color = Muted, textAlign = TextAlign.Center)
+
+            if (technician) {
+                Row(Modifier.fillMaxWidth().background(accent.copy(alpha = .10f), RoundedCornerShape(12.dp)).padding(12.dp)) {
+                    Icon(Icons.Outlined.Info, null, tint = accent, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text("You need an access code from your administrator.", color = Ink, fontSize = 13.sp)
+                }
+            }
+
+            SectionHeader("Personal details")
+            AirportField(firstName, { firstName = it }, if (technician) "First name" else "First name (optional)", Icons.Outlined.Person, KeyboardType.Text)
+            AirportField(lastName, { lastName = it }, if (technician) "Last name" else "Last name (optional)", Icons.Outlined.Person, KeyboardType.Text)
+
+            if (technician) {
+                SectionHeader("Work details")
+                AirportField(phone, { phone = it }, "Phone number", Icons.Outlined.Phone, KeyboardType.Phone)
+                AirportField(employeeId, { employeeId = it }, "Employee ID", Icons.Outlined.Badge, KeyboardType.Text)
+                AirportField(company, { company = it }, "Company (optional)", Icons.Outlined.Business, KeyboardType.Text)
+            }
+
+            SectionHeader("Account")
+            AirportField(email, { email = it }, "Email address", Icons.Outlined.Email, KeyboardType.Email)
+            AirportField(password, { password = it }, "Password (15+ characters)", Icons.Outlined.Lock, KeyboardType.Password, eye, pwTransform)
+            AirportField(confirmation, { confirmation = it }, "Repeat password", Icons.Outlined.Lock, KeyboardType.Password, eye, pwTransform)
+
+            if (technician) {
+                AirportField(accessCode, { accessCode = it }, "Technician access code", Icons.Outlined.Key, KeyboardType.Password,
+                    transform = PasswordVisualTransformation())
+            }
+
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth()) }
+
+            Spacer(Modifier.height(6.dp))
+            Button(
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= 37 &&
+                        context.checkSelfPermission("android.permission.ACCESS_LOCAL_NETWORK") != PackageManager.PERMISSION_GRANTED) {
+                        permissionLauncher.launch("android.permission.ACCESS_LOCAL_NETWORK")
+                    } else submit()
+                },
+                enabled = !loading,
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = accent)
+            ) {
+                if (loading) { CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(Modifier.width(10.dp)) }
+                Text(when {
+                    loading -> "Creating account..."
+                    technician -> "Register as technician"
+                    else -> "Create account"
+                }, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Text("Already have an account?", color = Muted)
+            TextButton(onClick = onBack, enabled = !loading) { Text("Sign in", fontWeight = FontWeight.SemiBold, color = accent) }
+        }
     }
 }
 
-private suspend fun requestRegistration(firstName: String, lastName: String, email: String, password: String) =
+private suspend fun requestRegistration(body: JSONObject, technician: Boolean) =
     withContext(Dispatchers.IO) {
-        val connection = URL("$BACKEND_URL/auth/register").openConnection() as HttpURLConnection
+        val path = if (technician) "/auth/register-technician" else "/auth/register"
+        val connection = URL("$BACKEND_URL$path").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "POST"
             connection.connectTimeout = 10_000
@@ -743,20 +1274,20 @@ private suspend fun requestRegistration(firstName: String, lastName: String, ema
             connection.instanceFollowRedirects = false
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-            val body = JSONObject().put("first_name", firstName).put("last_name", lastName)
-                .put("email", email).put("password", password)
             connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (status == 409) throw LoginRejected("An account with this email already exists. Sign in instead.")
-            if (status == 400) {
-                val message = runCatching { JSONObject(response).optString("error") }.getOrNull()
-                throw LoginRejected(message?.takeIf { it.isNotBlank() } ?: "Check your account details.")
+            val serverMessage = runCatching { JSONObject(response).optString("error") }.getOrNull()?.takeIf { it.isNotBlank() }
+            when (status) {
+                201 -> Unit
+                409 -> throw LoginRejected(serverMessage ?: "An account with this email already exists. Sign in instead.")
+                400, 403 -> throw LoginRejected(serverMessage ?: "Check your details.")
+                404 -> throw LoginRejected("Technician registration is not available on this server yet.")
+                else -> throw LoginRejected("Could not create account (HTTP $status). Try again.")
             }
-            if (status != 201) throw LoginRejected("Could not create account (HTTP $status). Try again.")
-            val result = JSONObject(response)
-            if (result.optLong("user_id", 0) <= 0) throw LoginRejected("Unexpected server response. Try signing in to check your account.")
+            if (JSONObject(response).optLong("user_id", 0) <= 0)
+                throw LoginRejected("Unexpected server response. Try signing in to check your account.")
             Unit
         } finally {
             connection.disconnect()
@@ -1232,237 +1763,578 @@ private suspend fun technicianRequest(path: String, token: String, body: JSONObj
         json
     } finally { connection.disconnect() }
 }
+// ───────────── Technician app ─────────────
 
+// Status data from the beacon's scan response (manufacturer ID 0xFFFF):
+// [battery %][charging][temp x10, big-endian int16][fan]
+private data class BeaconTelemetry(val batteryPct: Int, val charging: Boolean, val tempC: Double?, val fanOn: Boolean)
+
+private fun parseBeaconTelemetry(d: ByteArray): BeaconTelemetry? {
+    if (d.size < 5) return null
+    val pct = d[0].toInt() and 255
+    if (pct > 100) return null
+    val raw = ((d[2].toInt() and 255) shl 8) or (d[3].toInt() and 255)
+    val temp = if (raw == 0x7FFF) null else raw.toShort() / 10.0
+    return BeaconTelemetry(pct, d[1].toInt() != 0, temp, d[4].toInt() != 0)
+}
+
+private data class TechBeacon(
+    val id: Long, val serial: String, val label: String, val floorId: Long, val nodeId: Long?,
+    val minor: Int, val x: Double, val y: Double, val txPower: Int, val status: String
+)
+
+private fun JSONObject.toTechBeacon() = TechBeacon(
+    getLong("id"), getString("device_serial"), optString("label"), getLong("floor_id"),
+    if (isNull("navigation_node_id")) null else getLong("navigation_node_id"),
+    getInt("minor"), getDouble("x"), getDouble("y"), getInt("tx_power_calibration"), getString("status")
+)
+
+private fun TechBeacon.toSaveBody(locationId: Long): JSONObject = JSONObject()
+    .put("id", if (id > 0) id else JSONObject.NULL).put("location_id", locationId).put("floor_id", floorId)
+    .put("navigation_node_id", nodeId ?: JSONObject.NULL).put("device_serial", serial).put("minor", minor)
+    .put("label", label).put("x", x).put("y", y).put("tx_power_calibration", txPower).put("status", status)
+
+private val techStatuses = listOf("ACTIVE", "MAINTENANCE", "INACTIVE", "REPLACED")
+private val Danger = Color(0xFFE5484D)
+private fun statusColor(s: String) = when (s) {
+    "ACTIVE" -> Green; "MAINTENANCE" -> Color(0xFFF5A524); "INACTIVE" -> Muted; else -> Danger
+}
+private fun statusLabel(s: String) = s.lowercase().replaceFirstChar { it.uppercase() }
+
+private fun needsAttention(d: TechBeacon, live: Map<Long, LiveSignalReading>, t: BeaconTelemetry?, scanning: Boolean): Boolean =
+    d.status == "MAINTENANCE" ||
+            (scanning && d.status == "ACTIVE" && d.id !in live) ||
+            (t != null && (t.batteryPct < 20 || (t.tempC ?: 0.0) >= 45.0))
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TechnicianScreen(onSignOut: () -> Unit) {
-    val teal = Color(0xFF008F9B)
     var tab by remember { mutableStateOf(0) }
-    var locations by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var config by remember { mutableStateOf<JSONObject?>(null) }
     var loading by remember { mutableStateOf(true) }
-    var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var savedMessage by remember { mutableStateOf<String?>(null) }
-    var selectedID by remember { mutableStateOf<Long?>(null) }
-    var serial by remember { mutableStateOf("") }
-    var label by remember { mutableStateOf("") }
-    var floorID by remember { mutableStateOf<Long?>(null) }
-    var nodeID by remember { mutableStateOf<Long?>(null) }
-    var minor by remember { mutableStateOf("") }
-    var x by remember { mutableStateOf("") }
-    var y by remember { mutableStateOf("") }
-    var calibration by remember { mutableStateOf("-59") }
-    var status by remember { mutableStateOf("ACTIVE") }
-    var users by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var accountsLoading by remember { mutableStateOf(false) }
-    var commands by remember { mutableStateOf<String?>(null) }
+    var reload by remember { mutableStateOf(0) }
+    var detailsId by remember { mutableStateOf<Long?>(null) }
+    var formBeacon by remember { mutableStateOf<TechBeacon?>(null) }
+    var formKey by remember { mutableStateOf(0) }
+    val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    fun token() = BackendSession.token ?: throw LoginRejected("Your session ended. Sign in again.")
-    fun clearForm() {
-        selectedID = null; serial = ""; label = ""; floorID = null; nodeID = null
-        minor = ""; x = ""; y = ""; calibration = "-59"; status = "ACTIVE"; commands = null
-    }
-    fun loadLocation(id: Long) {
-        if (saving) return
-        loading = true; error = null; config = null; savedMessage = null; clearForm()
-        scope.launch {
-            try { config = technicianRequest("/technician/config?location_id=$id", token()) }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error = e.message ?: "Could not load location." }
-            finally { loading = false }
-        }
-    }
-    fun loadLocations() {
+    val context = LocalContext.current
+
+    LaunchedEffect(reload) {
         loading = true; error = null
-        scope.launch {
-            try {
-                val array = technicianRequest("/technician/locations", token()).getJSONArray("locations")
-                locations = List(array.length()) { array.getJSONObject(it) }
-                if (locations.isEmpty()) { config = null; loading = false }
-                else {
-                    val preferred = locations.firstOrNull { it.getLong("id") == DEMO_LOCATION_ID.toLong() } ?: locations.first()
-                    loadLocation(preferred.getLong("id"))
-                }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { error = e.message ?: "Could not load locations."; loading = false }
+        try {
+            val token = BackendSession.token ?: throw LoginRejected("Your session ended. Sign in again.")
+            val array = technicianRequest("/technician/locations", token).getJSONArray("locations")
+            if (array.length() == 0) throw LoginRejected("No active location in the database.")
+            val all = List(array.length()) { array.getJSONObject(it) }
+            val chosen = all.firstOrNull { it.getLong("id") == DEMO_LOCATION_ID.toLong() } ?: all.first()
+            config = technicianRequest("/technician/config?location_id=${chosen.getLong("id")}", token)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) {
+            val msg = e.message ?: "Could not load beacons. Check the connection."
+            if (config == null) error = msg else snackbar.showSnackbar(msg)
+        } finally { loading = false }
+    }
+
+    val cfg = config
+    val locationObj = cfg?.optJSONObject("location")
+    val locationId = locationObj?.getLong("id")
+    val locationUuid = locationObj?.getString("uuid")
+    val locationName = locationObj?.optString("name").orEmpty()
+    val floors = remember(cfg) { cfg?.optJSONArray("floors")?.let { a -> List(a.length()) { a.getJSONObject(it) } }.orEmpty() }
+    val nodes = remember(cfg) { cfg?.optJSONArray("nodes")?.let { a -> List(a.length()) { a.getJSONObject(it) } }.orEmpty() }
+    val devices = remember(cfg) {
+        cfg?.optJSONArray("beacons")?.let { a -> List(a.length()) { a.getJSONObject(it).toTechBeacon() } }.orEmpty().sortedBy { it.minor }
+    }
+    fun floorName(id: Long) = floors.firstOrNull { it.getLong("id") == id }?.optString("name")?.ifBlank { null } ?: "Floor $id"
+
+    // Live check: scan for the registered beacons to see which are broadcasting
+    val registered = remember(devices, floors, locationUuid) {
+        if (locationUuid == null) emptyList() else devices.mapNotNull { d ->
+            val major = floors.firstOrNull { it.getLong("id") == d.floorId }?.getInt("major") ?: return@mapNotNull null
+            RegisteredBeacon(d.id, locationUuid, major, d.minor, d.floorId, d.label, d.x, d.y, d.txPower)
         }
     }
-    fun edit(b: JSONObject) {
-        selectedID = b.getLong("id"); serial = b.getString("device_serial"); label = b.optString("label")
-        floorID = b.getLong("floor_id"); nodeID = if (b.isNull("navigation_node_id")) null else b.getLong("navigation_node_id")
-        minor = b.getInt("minor").toString(); x = b.getDouble("x").toString(); y = b.getDouble("y").toString()
-        calibration = b.getInt("tx_power_calibration").toString(); status = b.getString("status")
-        commands = null; error = null; savedMessage = null; tab = 0
+    val controller = remember(context, registered) { ForegroundBeaconScanner(context, registered) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        if (controller.hasPermissions()) controller.start() else controller.permissionDenied()
     }
-    LaunchedEffect(Unit) { loadLocations() }
-    MaterialTheme(colorScheme = lightColorScheme(primary = teal, secondary = teal, background = Color.White)) {
-        Scaffold(containerColor = Color.White, bottomBar = {
-            NavigationBar(containerColor = Color.White) {
-                listOf("Devices" to Icons.Outlined.Memory, "Overview" to Icons.Outlined.Dashboard, "Settings" to Icons.Outlined.Settings).forEachIndexed { index, item ->
-                    NavigationBarItem(selected = tab == index, onClick = { tab = index },
-                        icon = { Icon(item.second, item.first) }, label = { Text(item.first) })
+    fun startScan() {
+        if (controller.hasPermissions()) controller.start() else permissionLauncher.launch(controller.neededPermissions())
+    }
+    LaunchedEffect(controller) { if (registered.isNotEmpty() && controller.hasPermissions()) controller.start() }
+    val owner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(controller, owner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) controller.stop()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && !controller.scanning &&
+                registered.isNotEmpty() && controller.hasPermissions()) controller.start()
+        }
+        owner.lifecycle.addObserver(observer)
+        onDispose { owner.lifecycle.removeObserver(observer); controller.stop() }
+    }
+    var live by remember(controller) { mutableStateOf<Map<Long, LiveSignalReading>>(emptyMap()) }
+    var telemetry by remember(controller) { mutableStateOf<Map<Long, BeaconTelemetry>>(emptyMap()) }
+    LaunchedEffect(controller) {
+        while (true) {
+            controller.checkWhileScanning()
+            val now = android.os.SystemClock.elapsedRealtime()
+            val readings = controller.snapshot()
+            val tele = controller.telemetrySnapshot()
+            live = if (!controller.scanning) emptyMap() else registered.mapNotNull { b ->
+                readings[liveIdentity(b)]?.takeIf { isLiveReadingFresh(now, it.seenAt) }?.let { b.id to it }
+            }.toMap()
+            telemetry = registered.mapNotNull { b -> tele[liveIdentity(b)]?.let { b.id to it } }.toMap()
+            delay(1000)
+        }
+    }
+
+    fun save(updated: TechBeacon, message: String, after: (Boolean) -> Unit = {}) {
+        val loc = locationId ?: return
+        scope.launch {
+            var ok = false
+            try {
+                val token = BackendSession.token ?: throw LoginRejected("Your session ended. Sign in again.")
+                val response = technicianRequest("/technician/beacons", token, updated.toSaveBody(loc))
+                if (!response.optBoolean("saved", false)) throw LoginRejected("The server did not confirm the save.")
+                config = technicianRequest("/technician/config?location_id=$loc", token)
+                ok = true
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Save failed. Check the connection.") }
+            after(ok)
+            if (ok) snackbar.showSnackbar(message)
+        }
+    }
+
+    MaterialTheme(colorScheme = lightColorScheme(primary = TechAccent, secondary = TechAccent)) {
+        Scaffold(
+            containerColor = Color(0xFFF7F8FB),
+            snackbarHost = { SnackbarHost(snackbar) },
+            bottomBar = {
+                NavigationBar(containerColor = Color.White) {
+                    listOf(
+                        Icons.Outlined.Sensors to "Beacons",
+                        Icons.Outlined.AddCircle to "Add beacon",
+                        Icons.Outlined.Person to "Account"
+                    ).forEachIndexed { i, (icon, label) ->
+                        NavigationBarItem(
+                            selected = tab == i,
+                            onClick = {
+                                if (i == 1 && tab != 1) { formBeacon = null; formKey++ }
+                                tab = i
+                            },
+                            icon = { Icon(icon, label) },
+                            label = { Text(label, fontSize = 11.sp, maxLines = 1) },
+                            colors = NavigationBarItemDefaults.colors(selectedIconColor = TechAccent,
+                                selectedTextColor = TechAccent, indicatorColor = TechAccent.copy(alpha = .14f))
+                        )
+                    }
                 }
             }
-        }) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Memory, null, tint = teal, modifier = Modifier.size(36.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text("ESP32 Admin", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink, modifier = Modifier.weight(1f))
-                    TextButton(onClick = onSignOut, enabled = !saving) { Text("Sign out") }
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when {
+                    cfg == null && loading -> CircularProgressIndicator(Modifier.align(Alignment.Center), color = TechAccent)
+                    cfg == null -> Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(error ?: "Could not load beacons.", color = Danger, textAlign = TextAlign.Center)
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(onClick = { reload++ }) { Text("Retry") }
+                        TextButton(onClick = onSignOut) { Text("Sign out") }
+                    }
+                    tab == 0 -> TechBeaconsTab(
+                        locationName, devices, live, telemetry, controller.scanning, controller.error, loading,
+                        ::floorName, onStartScan = { startScan() }, onRefresh = { reload++ },
+                        onOpen = { detailsId = it.id }
+                    )
+                    tab == 1 -> key(formKey) {
+                        TechBeaconForm(formBeacon, devices, floors, nodes, locationUuid) { beacon, done ->
+                            save(beacon, if (beacon.id > 0) "Saved ${beacon.label}" else "${beacon.label} added", done)
+                        }
+                    }
+                    else -> TechAccountTab(locationName, error == null, onSignOut)
                 }
-                HorizontalDivider()
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                savedMessage?.let {
-                    Surface(color = Color(0xFFE7F6ED), shape = RoundedCornerShape(10.dp)) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, null, tint = Green)
-                            Spacer(Modifier.width(8.dp)); Text(it, color = Ink)
-                        }
-                    }
+            }
+        }
+
+        val details = devices.firstOrNull { it.id == detailsId }
+        if (details != null) {
+            ModalBottomSheet(
+                onDismissRequest = { detailsId = null },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = Color.White
+            ) {
+                TechBeaconDetails(
+                    details, live[details.id], telemetry[details.id], controller.scanning, floorName(details.floorId),
+                    onRename = { name -> save(details.copy(label = name), "Renamed to $name") },
+                    onStatus = { s -> save(details.copy(status = s), "${details.label}: ${statusLabel(s)}") },
+                    onEditPlacement = { formBeacon = details; formKey++; detailsId = null; tab = 1 }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TechBeaconsTab(
+    locationName: String, devices: List<TechBeacon>, live: Map<Long, LiveSignalReading>,
+    telemetry: Map<Long, BeaconTelemetry>, scanning: Boolean, scanError: String?, refreshing: Boolean,
+    floorName: (Long) -> String, onStartScan: () -> Unit, onRefresh: () -> Unit, onOpen: (TechBeacon) -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    val q = query.trim()
+    val online = devices.count { it.id in live }
+    val attention = devices.count { needsAttention(it, live, telemetry[it.id], scanning) }
+    val shown = devices.filter {
+        q.isEmpty() || it.label.contains(q, true) || it.serial.contains(q, true) || it.minor.toString() == q
+    }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Beacons", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+                    if (locationName.isNotBlank()) Text(locationName, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (loading || saving) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                val current = config
-                if (locations.isNotEmpty()) {
-                    AdminChoice("Location", current?.getJSONObject("location")?.getLong("id")?.toString(),
-                        locations.map { it.getLong("id").toString() to it.getString("name") }, !loading && !saving) {
-                        loadLocation(it.toLong())
-                    }
+                if (refreshing) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = TechAccent)
+                else IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh", tint = TechAccent) }
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                StatTile("Total", devices.size.toString(), Ink, Modifier.weight(1f))
+                StatTile("Online", if (scanning) online.toString() else "–", Green, Modifier.weight(1f))
+                StatTile("Attention", attention.toString(), if (attention > 0) Danger else Muted, Modifier.weight(1f))
+            }
+        }
+        if (!scanning || scanError != null) item {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(TechAccent.copy(alpha = .10f))
+                    .clickable(onClick = onStartScan).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Bluetooth, null, tint = TechAccent)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Live check is off", fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(scanError ?: "Tap to see which beacons are broadcasting right now", color = Muted, fontSize = 13.sp)
                 }
-                if (!loading && current == null) {
-                    Text(if (locations.isEmpty()) "No location loaded. Check that an active location exists in MySQL." else "Load a location to configure its ESP32s.")
-                    OutlinedButton(onClick = { loadLocations() }, enabled = !saving) { Text("Reload locations") }
+            }
+        }
+        item {
+            OutlinedTextField(
+                query, { query = it }, Modifier.fillMaxWidth(),
+                placeholder = { Text("Search name, number or serial", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true, shape = RoundedCornerShape(14.dp)
+            )
+        }
+        if (devices.isEmpty()) item { Text("No beacons yet. Use “Add beacon” to register the first one.", color = Muted) }
+        else if (shown.isEmpty()) item { Text("No beacon matches “$q”.", color = Muted) }
+        items(shown, key = { it.id }) { d ->
+            TechBeaconCard(d, live[d.id], telemetry[d.id], scanning, floorName(d.floorId)) { onOpen(d) }
+        }
+    }
+}
+
+@Composable
+private fun StatTile(label: String, value: String, color: Color, modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).background(Color.White).padding(vertical = 12.dp, horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(value, color = color, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+        Text(label, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LiveChips(reading: LiveSignalReading?, t: BeaconTelemetry?, scanning: Boolean) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        when {
+            !scanning -> InfoChip("Live check off", Muted)
+            reading != null -> InfoChip("● Online · ${reading.filtered.toInt()} dBm", Green)
+            else -> InfoChip("○ Not heard", Danger)
+        }
+        if (t != null) {
+            InfoChip("🔋 ${t.batteryPct}%" + if (t.charging) " ⚡" else "", if (t.batteryPct < 20) Danger else Ink)
+            t.tempC?.let { InfoChip(String.format(java.util.Locale.US, "🌡 %.1f°C", it), if (it >= 45.0) Danger else Ink) }
+            InfoChip(if (t.fanOn) "🌀 Fan on" else "Fan off", Muted)
+        }
+    }
+}
+
+@Composable
+private fun TechBeaconCard(d: TechBeacon, reading: LiveSignalReading?, t: BeaconTelemetry?, scanning: Boolean,
+                           floor: String, onClick: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().shadow(1.dp, RoundedCornerShape(18.dp)).background(Color.White, RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(42.dp).background(TechAccent.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+                Text("${d.minor}", color = TechAccent, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(d.label.ifBlank { "Unnamed beacon" }, fontWeight = FontWeight.Bold, color = Ink, fontSize = 17.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("$floor · ${d.serial}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            StatusPill(d.status)
+        }
+        LiveChips(reading, t, scanning)
+    }
+}
+
+@Composable
+private fun StatusPill(status: String) {
+    val c = statusColor(status)
+    Text(statusLabel(status), color = c, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(50)).background(c.copy(alpha = .12f)).padding(horizontal = 10.dp, vertical = 4.dp))
+}
+
+@Composable
+private fun InfoChip(text: String, color: Color) {
+    Text(text, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+        modifier = Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = .10f)).padding(horizontal = 10.dp, vertical = 5.dp))
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun TechBeaconDetails(
+    d: TechBeacon, reading: LiveSignalReading?, t: BeaconTelemetry?, scanning: Boolean, floor: String,
+    onRename: (String) -> Unit, onStatus: (String) -> Unit, onEditPlacement: () -> Unit
+) {
+    var name by remember(d.id, d.label) { mutableStateOf(d.label) }
+    val clean = name.trim()
+    val nameOk = clean.isNotEmpty() && clean.length <= 32 && clean != d.label
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).imePadding()
+            .padding(horizontal = 22.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(50.dp).background(TechAccent.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+                Text("${d.minor}", color = TechAccent, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(d.label.ifBlank { "Unnamed beacon" }, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Ink,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text("Beacon ${d.minor} · $floor", color = Muted)
+            }
+            StatusPill(d.status)
+        }
+        LiveChips(reading, t, scanning)
+
+        SectionHeader("Name")
+        OutlinedTextField(
+            name, { if (it.length <= 32 && !it.contains('\n')) name = it }, Modifier.fillMaxWidth(),
+            singleLine = true, shape = RoundedCornerShape(14.dp),
+            supportingText = { Text("${clean.length}/32 · this is what passengers see") }
+        )
+        Button(onClick = { onRename(clean) }, enabled = nameOk, modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp)) { Text("Save name") }
+
+        SectionHeader("Status")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            techStatuses.forEach { s ->
+                FilterChip(
+                    selected = d.status == s,
+                    onClick = { if (d.status != s) onStatus(s) },
+                    label = { Text(statusLabel(s)) },
+                    leadingIcon = if (d.status == s) ({ Icon(Icons.Default.Check, null, Modifier.size(16.dp)) }) else null
+                )
+            }
+        }
+        Text("Only Active beacons are used by the passenger app.", color = Muted, fontSize = 12.sp)
+
+        SectionHeader("Device")
+        DetailLine("Serial", d.serial)
+        DetailLine("Beacon number (Minor)", d.minor.toString())
+        DetailLine("Position", "x ${d.x} m · y ${d.y} m")
+        DetailLine("Signal at 1 m", "${d.txPower} dBm")
+        OutlinedButton(onClick = onEditPlacement, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)) {
+            Icon(Icons.Outlined.Edit, null); Spacer(Modifier.width(8.dp)); Text("Edit placement & calibration")
+        }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Muted, modifier = Modifier.weight(1f))
+        Text(value, color = Ink, fontWeight = FontWeight.Medium, textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun TechField(label: String, value: String, onChange: (String) -> Unit, hint: String = "",
+                      keyboard: KeyboardType = KeyboardType.Text, modifier: Modifier = Modifier.fillMaxWidth(),
+                      enabled: Boolean = true) {
+    OutlinedTextField(
+        value, onChange, modifier, enabled = enabled,
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        placeholder = { Text(hint, maxLines = 1) },
+        singleLine = true, shape = RoundedCornerShape(14.dp),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboard)
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun TechBeaconForm(
+    start: TechBeacon?, devices: List<TechBeacon>, floors: List<JSONObject>, nodes: List<JSONObject>,
+    locationUuid: String?, onSave: (TechBeacon, (Boolean) -> Unit) -> Unit
+) {
+    val editing = start != null
+    var label by remember { mutableStateOf(start?.label ?: "") }
+    var serial by remember { mutableStateOf(start?.serial ?: "") }
+    var floorId by remember { mutableStateOf(start?.floorId ?: floors.firstOrNull()?.getLong("id")) }
+    var nodeId by remember { mutableStateOf(start?.nodeId) }
+    var minor by remember { mutableStateOf(start?.minor?.toString() ?: "") }
+    var x by remember { mutableStateOf(start?.x?.toString() ?: "") }
+    var y by remember { mutableStateOf(start?.y?.toString() ?: "") }
+    var txPower by remember { mutableStateOf(start?.txPower?.toString() ?: "-59") }
+    var status by remember { mutableStateOf(start?.status ?: "ACTIVE") }
+    var formError by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    var commands by remember { mutableStateOf<String?>(null) }
+
+    // Suggest the next free beacon number on the chosen floor
+    LaunchedEffect(floorId) {
+        val f = floorId
+        if (!editing && f != null) minor = ((devices.filter { it.floorId == f }.maxOfOrNull { it.minor } ?: 0) + 1).toString()
+    }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding().padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(if (editing) "Edit ${start!!.label}" else "Add a beacon", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Ink)
+        Text(if (editing) "Change its placement, number or calibration." else "Register a new ESP32, then send it the settings.", color = Muted)
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(TechAccent.copy(alpha = .10f)).padding(12.dp)
+        ) {
+            Icon(Icons.Outlined.Info, null, tint = TechAccent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text("Setting up over Bluetooth from the phone is coming next. For now, read the serial with STATUS in the serial monitor.",
+                color = Ink, fontSize = 13.sp)
+        }
+
+        SectionHeader("Identity")
+        TechField("Name", label, { if (it.length <= 32) label = it }, "e.g. Gate C7")
+        TechField("Device serial", serial, { serial = it.trim().uppercase() }, "e.g. 0855CA4185C8", enabled = !editing && !saving)
+
+        SectionHeader("Placement")
+        AdminChoice("Floor", floorId?.toString(), floors.map { it.getLong("id").toString() to it.optString("name") }, !saving) {
+            floorId = it.toLong(); nodeId = null
+        }
+        TechField("Beacon number (Minor)", minor, { minor = it.filter(Char::isDigit).take(5) }, "", KeyboardType.Number)
+        AdminChoice(
+            "Nearest path point", nodeId?.toString() ?: "none",
+            listOf("none" to "None") + nodes.filter { it.getLong("floor_id") == floorId }.map { it.getLong("id").toString() to it.getString("code") },
+            !saving
+        ) { nodeId = it.toLongOrNull() }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            TechField("X (m)", x, { x = it }, "0.0", KeyboardType.Decimal, Modifier.weight(1f))
+            TechField("Y (m)", y, { y = it }, "0.0", KeyboardType.Decimal, Modifier.weight(1f))
+        }
+
+        SectionHeader("Calibration")
+        TechField("Signal at 1 m (dBm)", txPower, { txPower = it }, "-59")
+
+        SectionHeader("Status")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            techStatuses.forEach { s ->
+                FilterChip(selected = status == s, onClick = { status = s }, label = { Text(statusLabel(s)) })
+            }
+        }
+
+        formError?.let { Text(it, color = Danger) }
+
+        Button(
+            onClick = {
+                val f = floorId; val m = minor.toIntOrNull(); val xx = x.trim().toDoubleOrNull()
+                val yy = y.trim().toDoubleOrNull(); val p = txPower.trim().toIntOrNull()
+                formError = when {
+                    label.trim().isEmpty() -> "Give the beacon a name."
+                    serial.isEmpty() || serial.length > 32 -> "Enter the device serial (shown by STATUS in the serial monitor)."
+                    f == null -> "Choose a floor."
+                    m == null || m !in 0..65535 -> "Beacon number must be between 0 and 65535."
+                    devices.any { it.floorId == f && it.minor == m && it.id != start?.id } -> "Beacon number $m is already used on this floor."
+                    xx == null || !xx.isFinite() || yy == null || !yy.isFinite() -> "Enter the X and Y position in metres."
+                    p == null || p !in -100..-20 -> "Signal at 1 m must be between -100 and -20 dBm."
+                    else -> null
                 }
-                if (tab == 2) {
-                    Text("Technician account", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Ink)
-                    Text(BackendSession.email.orEmpty())
-                    Text("Backend: $BACKEND_URL", color = Muted)
-                    Text("Accounts are registered through Create account. Technician permission is assigned in MySQL.", color = Muted)
-                    OutlinedButton(onClick = {
-                        accountsLoading = true; error = null
-                        scope.launch {
-                            try {
-                                val array = technicianRequest("/technician/users", token()).getJSONArray("users")
-                                users = List(array.length()) { array.getJSONObject(it) }
-                            } catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { error = e.message ?: "Could not load account emails." }
-                            finally { accountsLoading = false }
-                        }
-                    }, enabled = !accountsLoading && !saving) { Text("Load registered account emails") }
-                    if (accountsLoading) CircularProgressIndicator()
-                    users.forEach { u ->
-                        Text("${u.getString("email")} • ${if (u.getBoolean("is_active")) "Active" else "Inactive"}")
-                    }
-                } else if (current != null) {
-                    val location = current.getJSONObject("location")
-                    val floorsArray = current.getJSONArray("floors")
-                    val floors = List(floorsArray.length()) { floorsArray.getJSONObject(it) }
-                    LaunchedEffect(current, floorID) {
-                        if (floorID == null && floors.size == 1) floorID = floors.single().getLong("id")
-                    }
-                    if (floors.isEmpty()) {
-                        Text("The backend returned no floors for this location. Reload the location and check the backend response.", color = MaterialTheme.colorScheme.error)
-                    }
-                    val nodesArray = current.getJSONArray("nodes")
-                    val nodes = List(nodesArray.length()) { nodesArray.getJSONObject(it) }
-                    val devicesArray = current.getJSONArray("beacons")
-                    val devices = List(devicesArray.length()) { devicesArray.getJSONObject(it) }
-                    val selectedFloor = floors.firstOrNull { it.getLong("id") == floorID }
-                    if (tab == 1) {
-                        Text("Registered ESP32s", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Ink)
-                        Text("${devices.size} saved devices • ${devices.count { it.getString("status") == "ACTIVE" }} active", color = Muted)
-                        Text("These records come from MySQL. Active status does not verify Bluetooth reception.", color = Muted)
-                        if (devices.isEmpty()) Text("No devices registered here yet.")
-                        devices.forEach { b ->
-                            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text(b.optString("label"), fontWeight = FontWeight.Bold, color = Ink)
-                                    Text("Device ID #${b.getLong("id")} • ${b.getString("device_serial")}")
-                                    Text("Floor ID ${b.getLong("floor_id")} • Minor ${b.getInt("minor")} • ${b.getString("status")}", color = Muted)
-                                    Text("Position (${b.getDouble("x")}, ${b.getDouble("y")}) m", color = Muted)
-                                    TextButton(onClick = { edit(b) }, enabled = !saving && !loading) { Text("Edit placement") }
-                                }
-                            }
-                        }
-                        Button(onClick = { clearForm(); savedMessage = null; tab = 0 }, enabled = !saving && !loading) { Text("Register another ESP32") }
-                        OutlinedButton(onClick = { loadLocation(location.getLong("id")) }, enabled = !saving && !loading) { Text("Refresh database records") }
-                    } else {
-                        Text(if (selectedID == null) "Register an ESP32" else "Configure ESP32 #$selectedID", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Ink)
-                        Text("Save device placement to your database", color = Muted)
-                        Surface(color = Color(0xFFE9F5F6), shape = RoundedCornerShape(10.dp)) {
-                            Text("Manual registration • copy the device serial from PlatformIO STATUS", Modifier.padding(12.dp), color = teal)
-                        }
-                        Text("Bluetooth scanning is available in a later phone-testing step.", color = Muted, fontSize = 12.sp)
-                        AdminTextField("Device name", label, { label = it }, !saving, hint = "e.g. Gate C7")
-                        AdminTextField("Device ID (assigned by database)", selectedID?.toString() ?: "Assigned when saved", {}, false, readOnly = true)
-                        AdminTextField("Device serial", serial, { serial = it }, !saving, hint = "e.g. 0855CA4185C8")
-                        AdminTextField("Location UUID", location.getString("uuid"), {}, false, readOnly = true)
-                        AdminChoice("Floor", floorID?.toString(), floors.map { it.getLong("id").toString() to it.getString("name") }, !saving) {
-                            floorID = it.toLong(); nodeID = null
-                        }
-                        AdminTextField("Major (from selected floor)", selectedFloor?.getInt("major")?.toString() ?: "Select a floor", {}, false, readOnly = true)
-                        AdminTextField("Minor", minor, { minor = it }, !saving, hint = "Unique on this floor, 0–65535")
-                        AdminChoice("Nearby navigation node", nodeID?.toString() ?: "none",
-                            listOf("none" to "No linked node") + nodes.filter { it.getLong("floor_id") == floorID }.map { it.getLong("id").toString() to it.getString("code") }, !saving) {
-                            nodeID = it.toLongOrNull()
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(Modifier.weight(1f)) { AdminTextField("X position (m)", x, { x = it }, !saving) }
-                            Box(Modifier.weight(1f)) { AdminTextField("Y position (m)", y, { y = it }, !saving) }
-                        }
-                        Text("Use measured beacon coordinates in the same floor-map coordinate system. Linking a node does not copy its coordinates.", color = Muted, fontSize = 12.sp)
-                        AdminTextField("RSSI at 1 metre (dBm)", calibration, { calibration = it }, !saving)
-                        AdminChoice("Status", status, listOf("ACTIVE", "INACTIVE", "MAINTENANCE", "REPLACED").map { it to it }, !saving) { status = it }
-                        Button(onClick = {
-                            val f = floorID; val m = minor.toIntOrNull(); val xx = x.toDoubleOrNull(); val yy = y.toDoubleOrNull(); val power = calibration.toIntOrNull()
-                            if (f == null || serial.isBlank() || serial.trim().length > 32 || label.isBlank() || label.trim().length > 32 || label.contains('\n') || label.contains('\r') ||
-                                m == null || m !in 0..65535 || xx == null || !xx.isFinite() || yy == null || !yy.isFinite() || power == null || power !in -127..127) {
-                                error = "Enter the serial, device name, floor, valid Minor, coordinates and calibration."
-                            } else {
-                                val locationID = location.getLong("id")
-                                val cleanLabel = label.trim()
-                                val body = JSONObject().put("id", selectedID ?: JSONObject.NULL).put("location_id", locationID).put("floor_id", f)
-                                    .put("navigation_node_id", nodeID ?: JSONObject.NULL).put("device_serial", serial.trim()).put("minor", m).put("label", cleanLabel)
-                                    .put("x", xx).put("y", yy).put("tx_power_calibration", power).put("status", status)
-                                val firmwareCommands = "SET_UUID ${location.getString("uuid")}\nSET_FLOOR ${selectedFloor!!.getInt("major")}\nSET_MINOR $m\nSET_LABEL $cleanLabel\nSET_TXPOWER $power\nSAVE"
-                                saving = true; error = null; savedMessage = null; commands = null
-                                scope.launch {
-                                    try {
-                                        val response = technicianRequest("/technician/beacons", token(), body)
-                                        require(response.getBoolean("saved"))
-                                        selectedID = response.getLong("id")
-                                        savedMessage = "Saved to MySQL • device ID #$selectedID"
-                                        commands = firmwareCommands
-                                        try { config = technicianRequest("/technician/config?location_id=$locationID", token()) }
-                                        catch (e: CancellationException) { throw e }
-                                        catch (_: Exception) { error = "Saved, but the database list could not refresh. Use Refresh database records." }
-                                    } catch (e: CancellationException) { throw e }
-                                    catch (e: Exception) { error = e.message ?: "Save failed. Check connection before retrying." }
-                                    finally { saving = false }
-                                }
-                            }
-                        }, enabled = !saving && !loading, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(10.dp)) {
-                            Icon(Icons.Outlined.Storage, null); Spacer(Modifier.width(8.dp))
-                            Text(if (saving) "Saving..." else "Save to database")
-                        }
-                        TextButton(onClick = { clearForm(); savedMessage = null }, enabled = !saving) { Text("Clear / new device") }
-                        commands?.let { text ->
-                            OutlinedCard(Modifier.fillMaxWidth()) {
-                                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text("Apply to ESP32 in PlatformIO", fontWeight = FontWeight.Bold)
-                                    Text("The database save does not write firmware. Send these commands one at a time through USB Serial Monitor.", color = Muted)
-                                    androidx.compose.foundation.text.selection.SelectionContainer { Text(text) }
-                                }
-                            }
-                        }
-                    }
+                if (formError != null) return@Button
+                val beacon = TechBeacon(start?.id ?: 0, serial, label.trim(), f!!, nodeId, m!!, xx!!, yy!!, p!!, status)
+                val major = floors.firstOrNull { it.getLong("id") == f }?.getInt("major")
+                saving = true; commands = null
+                onSave(beacon) { ok ->
+                    saving = false
+                    if (ok && major != null && locationUuid != null) commands =
+                        "SET_UUID $locationUuid\nSET_FLOOR $major\nSET_MINOR $m\nSET_LABEL ${beacon.label}\nSET_TXPOWER $p\nSAVE"
+                }
+            },
+            enabled = !saving,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            if (saving) { CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp); Spacer(Modifier.width(10.dp)) }
+            Text(if (editing) "Save changes" else "Add beacon", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        commands?.let { text ->
+            Column(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White)
+                    .border(1.dp, Color(0xFFE3E8F0), RoundedCornerShape(16.dp)).padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("✅ Saved. Now send this to the ESP32", fontWeight = FontWeight.Bold, color = Ink)
+                Text("Open the serial monitor and type these one line at a time:", color = Muted, fontSize = 13.sp)
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(text, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 13.sp, color = Ink)
                 }
             }
         }
     }
 }
 
+@Composable
+private fun TechAccountTab(locationName: String, connected: Boolean, onSignOut: () -> Unit) {
+    val email = BackendSession.email.orEmpty()
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Box(Modifier.size(88.dp).background(TechAccent.copy(alpha = .12f), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.Build, null, tint = TechAccent, modifier = Modifier.size(40.dp))
+        }
+        Text(email, color = Ink, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+        StatusPill("TECHNICIAN")
+        Surface(Modifier.fillMaxWidth(), RoundedCornerShape(18.dp), color = Color.White, shadowElevation = 2.dp) {
+            Column(Modifier.padding(vertical = 4.dp)) {
+                ProfileRow(Icons.Outlined.Email, "Email", email)
+                HorizontalDivider(color = Color(0xFFE5EAF2))
+                ProfileRow(Icons.Outlined.LocationOn, "Location", locationName.ifBlank { "—" })
+                HorizontalDivider(color = Color(0xFFE5EAF2))
+                ProfileRow(Icons.Outlined.Storage, "Server", if (connected) "Connected · $BACKEND_URL" else "Offline")
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onSignOut, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Danger)
+        ) { Text("Sign out", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+    }
+}
 @Composable
 private fun AdminTextField(title: String, value: String, change: (String) -> Unit, enabled: Boolean,
                            readOnly: Boolean = false, hint: String = "") {
@@ -2139,6 +3011,8 @@ private class ForegroundBeaconScanner(context: android.content.Context, beacons:
     private val registered = beacons.map { LiveBeaconIdentity(it.uuid.lowercase(java.util.Locale.ROOT), it.major, it.minor) }.toSet()
     private val readings = mutableMapOf<LiveBeaconIdentity, LiveSignalReading>()
     private val filters = mutableMapOf<LiveBeaconIdentity, LiveRssiKalman>()
+    private val telemetry = mutableMapOf<LiveBeaconIdentity, BeaconTelemetry>()
+    fun telemetrySnapshot(): Map<LiveBeaconIdentity, BeaconTelemetry> = telemetry.toMap()
     private var scanner: android.bluetooth.le.BluetoothLeScanner? = null
     private var callback: android.bluetooth.le.ScanCallback? = null
     private var generation = 0
@@ -2185,7 +3059,7 @@ private class ForegroundBeaconScanner(context: android.content.Context, beacons:
             settingsProblem()?.let { error = it; return }
             val manager = context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager
             val nextScanner = manager.adapter.bluetoothLeScanner ?: run { error = "Bluetooth scanner unavailable. Check Bluetooth is on."; return }
-            readings.clear(); filters.clear()
+            readings.clear(); filters.clear(); telemetry.clear()
             val currentGeneration = ++generation
             val nextCallback = object : android.bluetooth.le.ScanCallback() {
                 private fun consume(result: android.bluetooth.le.ScanResult) {
@@ -2193,6 +3067,7 @@ private class ForegroundBeaconScanner(context: android.content.Context, beacons:
                     val frame = parseLiveIBeacon(payload) ?: return
                     if (frame.identity !in registered || result.rssi !in -127..-1) return
                     val seen = result.timestampNanos / 1_000_000L
+                    val status = result.scanRecord?.getManufacturerSpecificData(0xFFFF)?.let { parseBeaconTelemetry(it) }
                     handler.post {
                         if (!scanning || generation != currentGeneration) return@post
                         val now = android.os.SystemClock.elapsedRealtime()
@@ -2204,6 +3079,7 @@ private class ForegroundBeaconScanner(context: android.content.Context, beacons:
                         readings[frame.identity] = LiveSignalReading(frame.identity, result.rssi, filtered, seen,
                             if (previous == null || !isLiveReadingFresh(seen, previous.seenAt)) 1 else previous.samples + 1,
                             frame.advertisedCalibration)
+                        if (status != null) telemetry[frame.identity] = status
                     }
                 }
                 override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) { consume(result) }
